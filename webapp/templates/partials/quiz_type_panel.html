@@ -1,0 +1,143 @@
+<div id="quiz-type-container" class="space-y-6">
+    <section class="space-y-4">
+        <div class="bg-slate-800/60 border border-slate-700 rounded-xl p-5 shadow">
+            <div class="flex flex-col gap-2">
+                <h2 class="text-lg font-semibold text-white">Виды викторин</h2>
+                <p class="text-sm text-slate-400">
+                    Выберите формат, чтобы посмотреть доступные категории и начать прохождение тестов.
+                </p>
+                <p class="text-xs text-slate-500">
+                    Активный раздел: <span class="text-slate-200">{{ active_type.title }}</span>
+                    {% if active_type.description %}
+                        — {{ active_type.description }}
+                    {% endif %}
+                </p>
+            </div>
+            {% if types_error %}
+                <div class="mt-4 border border-amber-500/40 bg-amber-900/40 text-amber-200 text-sm rounded-lg p-3">
+                    {{ types_error }}
+                </div>
+            {% endif %}
+            <div class="flex flex-wrap gap-2 mt-4">
+                {% for quiz_type in quiz_types %}
+                    {% set is_active = quiz_type.slug == active_type.slug %}
+                    <button
+                        type="button"
+                        class="px-4 py-2 rounded-lg text-sm font-medium border transition focus:outline-none focus:ring-2 focus:ring-offset-0 focus:ring-sky-500 {{ 'bg-sky-500/90 border-sky-400 text-white shadow' if is_active else 'bg-slate-800/60 border-slate-600 text-slate-200 hover:border-sky-500' }}"
+                        hx-get="{{ url_for('load_quiz_type', quiz_type_slug=quiz_type.slug) }}"
+                        hx-target="#quiz-type-container"
+                        hx-swap="outerHTML"
+                        hx-indicator="#quiz-loader"
+                        aria-pressed="{{ 'true' if is_active else 'false' }}"
+                    >
+                        {{ quiz_type.title }}
+                    </button>
+                {% endfor %}
+            </div>
+        </div>
+
+        {% if active_type.slug == 'classic' %}
+            <div class="space-y-4">
+                <div>
+                    <h3 class="text-base font-semibold text-white">Категории классической викторины</h3>
+                    <p class="text-sm text-slate-400 mt-1">Выберите категорию, чтобы увидеть список викторин.</p>
+                </div>
+                {% if categories_error %}
+                    <div class="border border-amber-500/40 bg-amber-900/40 text-amber-200 text-sm rounded-lg p-4">
+                        {{ categories_error }}
+                    </div>
+                {% endif %}
+                {% if category_notice %}
+                    <div class="border border-amber-500/40 bg-amber-900/40 text-amber-200 text-sm rounded-lg p-4">
+                        {{ category_notice }}
+                    </div>
+                {% endif %}
+
+                {% if categories %}
+                    <div class="grid gap-3" id="category-list">
+                        {% for category in categories %}
+                            {% set is_selected = selected_category and selected_category.id == category.id %}
+                            <button
+                                type="button"
+                                class="w-full text-left rounded-lg border transition p-4 flex items-center justify-between {{ 'border-sky-400 bg-sky-500/20 text-white shadow' if is_selected else 'border-slate-700 bg-slate-800/60 hover:border-sky-500 text-slate-200' }}"
+                                hx-get="{{ url_for('load_quiz_type', quiz_type_slug=active_type.slug) }}?category_id={{ category.id }}"
+                                hx-target="#quiz-type-container"
+                                hx-swap="outerHTML"
+                                hx-indicator="#quiz-loader"
+                                aria-pressed="{{ 'true' if is_selected else 'false' }}"
+                            >
+                                <span class="text-base font-medium">{{ category.name }}</span>
+                                <svg class="w-5 h-5 {{ 'text-sky-200' if is_selected else 'text-slate-400' }}" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+                                    <path stroke-linecap="round" stroke-linejoin="round" d="m8.25 4.5 7.5 7.5-7.5 7.5" />
+                                </svg>
+                            </button>
+                        {% endfor %}
+                    </div>
+                {% elif not categories_error %}
+                    <div class="text-sm text-slate-400 border border-dashed border-slate-700 rounded-lg p-4 text-center">
+                        Категории не найдены. Добавьте их через админ-панель или бота.
+                    </div>
+                {% endif %}
+            </div>
+
+            <section class="mt-6" id="quiz-list">
+                {% if selected_category %}
+                    <div class="mb-4">
+                        <h3 class="text-base font-semibold text-white">Викторины категории «{{ selected_category.name }}»</h3>
+                        <p class="text-sm text-slate-400 mt-1">Выберите викторину, чтобы просмотреть вопросы.</p>
+                    </div>
+                    {% if quizzes_error %}
+                        <div class="border border-amber-500/40 bg-amber-900/40 text-amber-200 text-sm rounded-lg p-4">
+                            {{ quizzes_error }}
+                        </div>
+                    {% elif quizzes %}
+                        <div class="grid gap-3">
+                            {% for quiz in quizzes %}
+                                <button
+                                    class="w-full text-left bg-slate-800/60 border border-slate-700 hover:border-sky-500 transition rounded-lg p-4 flex items-center justify-between"
+                                    hx-get="{{ url_for('quiz_detail', quiz_id=quiz.id) }}"
+                                    hx-target="#quiz-detail"
+                                    hx-swap="innerHTML"
+                                    hx-indicator="#quiz-loader"
+                                >
+                                    <span class="text-base font-medium text-white">{{ quiz.title }}</span>
+                                    <svg class="w-5 h-5 text-slate-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+                                        <path stroke-linecap="round" stroke-linejoin="round" d="m8.25 4.5 7.5 7.5-7.5 7.5" />
+                                    </svg>
+                                </button>
+                            {% endfor %}
+                        </div>
+                    {% else %}
+                        <div class="text-sm text-slate-400 border border-dashed border-slate-700 rounded-lg p-4 text-center">
+                            В этой категории пока нет активных викторин.
+                        </div>
+                    {% endif %}
+                {% else %}
+                    <div class="border border-dashed border-slate-700 rounded-xl p-6 text-center text-slate-400">
+                        Выберите категорию, чтобы увидеть список викторин.
+                    </div>
+                {% endif %}
+            </section>
+        {% else %}
+            <section class="border border-slate-700 rounded-xl p-6 bg-slate-800/40 text-slate-200">
+                <h3 class="text-base font-semibold text-white">{{ active_type.title }}</h3>
+                <p class="text-sm text-slate-400 mt-2">
+                    {{ active_type.description or 'Раздел будет доступен позже. Пока можно пройти классические викторины.' }}
+                </p>
+            </section>
+            <section class="mt-6 border border-dashed border-slate-700 rounded-xl p-6 text-center text-slate-400" id="quiz-list">
+                Выберите «Классическая викторина», чтобы просмотреть категории и тесты.
+            </section>
+        {% endif %}
+    </section>
+
+    <section class="mt-6" id="quiz-detail" hx-indicator="#quiz-loader">
+        <div class="border border-dashed border-slate-700 rounded-xl p-6 text-center text-slate-400">
+            Выберите викторину, чтобы увидеть вопросы.
+        </div>
+    </section>
+
+    <div id="quiz-loader" class="htmx-indicator hidden mt-4 text-center text-slate-400">
+        Загружаем данные…
+    </div>
+</div>
