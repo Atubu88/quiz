@@ -5,7 +5,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from starlette.concurrency import run_in_threadpool
@@ -190,9 +190,15 @@ async def get_quiz_detail(quiz_id: int) -> tuple[dict[str, Any] | None, str | No
             for raw_option in options_response.data or []:
                 question_id = _to_int(raw_option.get("question_id"))
                 option_text = raw_option.get("text")
-                if question_id is None or option_text is None:
+                option_id = _to_int(raw_option.get("id"))
+                if (
+                    question_id is None
+                    or option_text is None
+                    or option_id is None
+                ):
                     continue
                 option_payload = {
+                    "id": option_id,
                     "text": option_text,
                     "is_correct": bool(raw_option.get("is_correct")),
                 }
@@ -203,6 +209,10 @@ async def get_quiz_detail(quiz_id: int) -> tuple[dict[str, Any] | None, str | No
             question["options"] = options
             question["correct_answer"] = next(
                 (option["text"] for option in options if option["is_correct"]),
+                None,
+            )
+            question["correct_option_id"] = next(
+                (option["id"] for option in options if option["is_correct"]),
                 None,
             )
 
@@ -226,6 +236,24 @@ async def get_quiz_detail(quiz_id: int) -> tuple[dict[str, Any] | None, str | No
 
 def _is_hx(request: Request) -> bool:
     return request.headers.get("Hx-Request", "false").lower() == "true"
+
+
+async def _get_quiz_or_error(quiz_id: int) -> dict[str, Any]:
+    quiz, quiz_error = await get_quiz_detail(quiz_id)
+    if quiz is None:
+        if quiz_error is None:
+            raise HTTPException(status_code=404, detail="Викторина не найдена")
+        raise HTTPException(status_code=500, detail=quiz_error)
+    return quiz
+
+
+def _find_question(
+    quiz: dict[str, Any], question_id: int
+) -> tuple[int | None, dict[str, Any] | None]:
+    for index, question in enumerate(quiz.get("questions") or []):
+        if question.get("id") == question_id:
+            return index, question
+    return None, None
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -290,3 +318,116 @@ async def read_quiz(quiz_id: int, request: Request) -> HTMLResponse:
     if _is_hx(request):
         return templates.TemplateResponse("quiz.html", context)
     return templates.TemplateResponse("index.html", context)
+
+
+@app.get("/quiz/{quiz_id}/question/{question_id}", response_class=HTMLResponse)
+async def read_quiz_question(
+    quiz_id: int,
+    question_id: int,
+    request: Request,
+    correct_count: int = 0,
+    answered_count: int = 0,
+) -> HTMLResponse:
+    quiz = await _get_quiz_or_error(quiz_id)
+    total_questions = len(quiz.get("questions") or [])
+
+    safe_correct_count = max(0, min(correct_count, total_questions))
+    safe_answered_count = max(0, min(answered_count, total_questions))
+
+    if safe_answered_count >= total_questions:
+        last_question = quiz.get("questions", [])[-1] if total_questions else None
+        context = {
+            "request": request,
+            "quiz": quiz,
+            "correct_count": safe_correct_count,
+            "total_questions": total_questions,
+            "last_question": last_question,
+            "last_question_index": total_questions if total_questions else None,
+            "selected_option_id": None,
+            "is_correct": None,
+        }
+        return templates.TemplateResponse("quiz_result.html", context)
+
+    index, question = _find_question(quiz, question_id)
+    if question is None or index is None:
+        raise HTTPException(status_code=404, detail="Вопрос не найден")
+
+    next_question_id = None
+    if index + 1 < total_questions:
+        next_question_id = quiz["questions"][index + 1]["id"]
+
+    context = {
+        "request": request,
+        "quiz_id": quiz_id,
+        "quiz": quiz,
+        "question": question,
+        "current_question_index": index + 1,
+        "total_questions": total_questions,
+        "correct_count": safe_correct_count,
+        "answered_count": safe_answered_count,
+        "show_result": False,
+        "selected_option_id": None,
+        "next_question_id": next_question_id,
+        "quiz_completed": False,
+    }
+    return templates.TemplateResponse("quiz_question.html", context)
+
+
+@app.post("/quiz/{quiz_id}/answer/{question_id}", response_class=HTMLResponse)
+async def submit_quiz_answer(
+    quiz_id: int,
+    question_id: int,
+    request: Request,
+    option_id: int = Form(...),
+    correct_count: int = Form(0),
+    answered_count: int = Form(0),
+) -> HTMLResponse:
+    quiz = await _get_quiz_or_error(quiz_id)
+    total_questions = len(quiz.get("questions") or [])
+
+    index, question = _find_question(quiz, question_id)
+    if question is None or index is None:
+        raise HTTPException(status_code=404, detail="Вопрос не найден")
+
+    selected_option = next(
+        (option for option in question.get("options", []) if option.get("id") == option_id),
+        None,
+    )
+    if selected_option is None:
+        raise HTTPException(status_code=400, detail="Некорректный вариант ответа")
+
+    is_correct = bool(selected_option.get("is_correct"))
+    updated_correct_count = min(correct_count + (1 if is_correct else 0), total_questions)
+    updated_answered_count = min(answered_count + 1, total_questions)
+
+    if updated_answered_count >= total_questions:
+        context = {
+            "request": request,
+            "quiz": quiz,
+            "correct_count": updated_correct_count,
+            "total_questions": total_questions,
+            "last_question": question,
+            "last_question_index": index + 1,
+            "selected_option_id": option_id,
+            "is_correct": is_correct,
+        }
+        return templates.TemplateResponse("quiz_result.html", context)
+
+    next_question_id = quiz["questions"][index + 1]["id"] if index + 1 < total_questions else None
+
+    context = {
+        "request": request,
+        "quiz_id": quiz_id,
+        "quiz": quiz,
+        "question": question,
+        "current_question_index": index + 1,
+        "total_questions": total_questions,
+        "correct_count": updated_correct_count,
+        "answered_count": updated_answered_count,
+        "show_result": True,
+        "selected_option_id": option_id,
+        "next_question_id": next_question_id,
+        "quiz_completed": False,
+        "is_correct": is_correct,
+    }
+    return templates.TemplateResponse("quiz_question.html", context)
