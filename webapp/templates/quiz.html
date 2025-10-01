@@ -2,7 +2,7 @@
   {% if current_category %}
     <button
       class="back-button"
-      hx-get="/category/{{ current_category.id }}"
+      hx-get="/?category={{ current_category.id }}"
       hx-target="#content"
       hx-push-url="true"
       hx-indicator=".htmx-indicator"
