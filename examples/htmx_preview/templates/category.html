@@ -1,0 +1,32 @@
+<button
+  class="back-button"
+  hx-get="/"
+  hx-target="#content"
+  hx-push-url="true"
+  hx-indicator=".htmx-indicator"
+>
+  ← Назад к категориям
+</button>
+<header>
+  <h1>{{ current_category.name }}</h1>
+  <p class="subtitle">Выберите викторину в выбранной категории.</p>
+</header>
+<section class="grid">
+  {% if quizzes %}
+    {% for quiz in quizzes %}
+      <article
+        class="card"
+        hx-get="/quiz/{{ quiz.id }}"
+        hx-target="#content"
+        hx-push-url="true"
+        hx-indicator=".htmx-indicator"
+      >
+        <span class="badge">Викторина</span>
+        <div class="card-title">{{ quiz.title }}</div>
+        <div class="card-description">Откройте, чтобы посмотреть список вопросов.</div>
+      </article>
+    {% endfor %}
+  {% else %}
+    <p>В этой категории пока нет активных викторин.</p>
+  {% endif %}
+</section>

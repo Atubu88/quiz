@@ -1,0 +1,26 @@
+<button
+  class="back-button"
+  hx-get="/category/{{ current_category.id }}"
+  hx-target="#content"
+  hx-push-url="true"
+  hx-indicator=".htmx-indicator"
+>
+  ← Назад к викторинам
+</button>
+<header>
+  <h1>{{ quiz.title }}</h1>
+  <p class="subtitle">Ниже представлен предварительный просмотр вопросов.</p>
+</header>
+<section>
+  {% for question in quiz.questions %}
+    <article class="quiz-question">
+      <h3>Вопрос {{ loop.index }}. {{ question.text }}</h3>
+      <ol class="options">
+        {% for option in question.options %}
+          <li>{{ option }}</li>
+        {% endfor %}
+      </ol>
+      <div class="answer">Правильный ответ: {{ question.answer }}</div>
+    </article>
+  {% endfor %}
+</section>
