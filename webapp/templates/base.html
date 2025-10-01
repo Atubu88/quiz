@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="ru" class="h-full">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="#0f172a">
+    <title>{% block title %}Quiz WebApp{% endblock %}</title>
+    <script src="https://cdn.tailwindcss.com?plugins=forms"></script>
+    <script src="https://unpkg.com/htmx.org@1.9.12" integrity="sha384-xFADjDfsAbHn84qxdjQ671O5jM90oCbGyF/F7fs/3Gzdh0dX8GZFOD9oTi27Cw2x" crossorigin="anonymous"></script>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            if (window.Telegram?.WebApp) {
+                const webApp = window.Telegram.WebApp;
+                webApp.expand();
+                webApp.ready();
+            }
+        });
+    </script>
+    {% block head %}{% endblock %}
+</head>
+<body class="h-full bg-slate-900 text-slate-100">
+    <div class="min-h-full max-w-3xl mx-auto px-4 py-6">
+        <header class="mb-6">
+            <h1 class="text-2xl font-semibold text-white">{% block header %}Веб-викторина{% endblock %}</h1>
+            <p class="text-slate-400 text-sm mt-1">Мини-приложение Telegram для прохождения тестов</p>
+        </header>
+        <main>
+            {% block content %}{% endblock %}
+        </main>
+    </div>
+</body>
+</html>
