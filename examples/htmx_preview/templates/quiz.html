@@ -1,0 +1,63 @@
+{% if current_category %}
+  <button
+    class="back-button"
+    hx-get="/category/{{ current_category.id }}"
+    hx-target="#content"
+    hx-push-url="true"
+    hx-indicator=".htmx-indicator"
+  >
+    ← Назад к викторинам
+  </button>
+{% else %}
+  <button
+    class="back-button"
+    hx-get="/"
+    hx-target="#content"
+    hx-push-url="true"
+    hx-indicator=".htmx-indicator"
+  >
+    ← Назад к категориям
+  </button>
+{% endif %}
+
+{% if quiz_error %}
+  <p class="notice">{{ quiz_error }}</p>
+{% elif quiz %}
+  <header>
+    <h1>{{ quiz.title }}</h1>
+    <p class="subtitle">
+      {{ quiz.description or "Ниже представлен предварительный просмотр вопросов." }}
+    </p>
+  </header>
+  <section>
+    {% if quiz.questions %}
+      {% for question in quiz.questions %}
+        <article class="quiz-question">
+          <h3>Вопрос {{ loop.index }}. {{ question.text }}</h3>
+          {% if question.options %}
+            <ol class="options">
+              {% for option in question.options %}
+                <li class="option{% if option.is_correct %} correct{% endif %}">
+                  {{ option.text }}
+                  {% if option.is_correct %}
+                    <span class="option-badge">Верно</span>
+                  {% endif %}
+                </li>
+              {% endfor %}
+            </ol>
+          {% endif %}
+          {% if question.correct_answer %}
+            <div class="answer">Правильный ответ: {{ question.correct_answer }}</div>
+          {% endif %}
+          {% if question.explanation %}
+            <p class="explanation">{{ question.explanation }}</p>
+          {% endif %}
+        </article>
+      {% endfor %}
+    {% else %}
+      <p class="empty-state">Для этой викторины пока нет вопросов.</p>
+    {% endif %}
+  </section>
+{% else %}
+  <p class="empty-state">Викторина недоступна.</p>
+{% endif %}
