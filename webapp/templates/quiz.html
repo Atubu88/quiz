@@ -32,25 +32,24 @@
     </header>
 
     {% if quiz.questions %}
-      {% set total_questions = quiz.questions | length %}
-      {% set first_question = quiz.questions[0] %}
-      {% set next_question_id = total_questions > 1 and quiz.questions[1].id or None %}
-      {% include "quiz_question.html" with
-        quiz_id=quiz.id,
-        quiz=quiz,
-        question=first_question,
-        current_question_index=1,
-        total_questions=total_questions,
-        correct_count=0,
-        answered_count=0,
-        show_result=False,
-        selected_option_id=None,
-        next_question_id=next_question_id,
-        quiz_completed=False
-      %}
-    {% else %}
-      <p class="empty-state">Для этой викторины пока нет вопросов.</p>
-    {% endif %}
+  {% set total_questions = quiz.questions | length %}
+  {% set first_question = quiz.questions[0] %}
+  {% set next_question_id = total_questions > 1 and quiz.questions[1].id or None %}
+
+  {% set quiz_id = quiz.id %}
+  {% set question = first_question %}
+  {% set current_question_index = 1 %}
+  {% set correct_count = 0 %}
+  {% set answered_count = 0 %}
+  {% set show_result = False %}
+  {% set selected_option_id = None %}
+  {% set quiz_completed = False %}
+
+  {% include "quiz_question.html" %}
+{% else %}
+  <p class="empty-state">Для этой викторины пока нет вопросов.</p>
+{% endif %}
+
   {% else %}
     <p class="empty-state">Викторина недоступна.</p>
   {% endif %}
