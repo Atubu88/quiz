@@ -339,7 +339,7 @@ async def read_category_quizzes(
         "quizzes": quizzes,
         "quizzes_error": quizzes_error,
     }
-    return templates.TemplateResponse("partials/quiz_list.html", context)
+    return templates.TemplateResponse("partials/category_panel.html", context)
 
 
 @app.get("/quiz/{quiz_id}", response_class=HTMLResponse)
