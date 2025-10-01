@@ -105,6 +105,36 @@
           border-color: rgba(99, 102, 241, 0.2);
           box-shadow: 0 10px 22px rgba(15, 23, 42, 0.6);
         }
+
+        .notice {
+          background: rgba(248, 113, 113, 0.22);
+          border-color: rgba(248, 113, 113, 0.4);
+          color: #fca5a5;
+        }
+
+        .option {
+          background: rgba(31, 41, 55, 0.85);
+          border-color: rgba(148, 163, 184, 0.35);
+        }
+
+        .option.correct {
+          background: rgba(34, 197, 94, 0.25);
+          border-color: rgba(74, 222, 128, 0.5);
+          color: #4ade80;
+        }
+
+        .option-badge {
+          background: rgba(34, 197, 94, 0.35);
+          color: #bbf7d0;
+        }
+
+        .explanation {
+          color: #93c5fd;
+        }
+
+        .empty-state {
+          color: #94a3b8;
+        }
       }
 
       .card-title {
@@ -126,6 +156,23 @@
         background: rgba(99, 102, 241, 0.12);
         color: var(--accent);
         font-weight: 600;
+      }
+
+      .notice {
+        margin: 1.5rem 0;
+        padding: 1rem 1.25rem;
+        border-radius: 18px;
+        background: rgba(239, 68, 68, 0.12);
+        border: 1px solid rgba(248, 113, 113, 0.35);
+        color: #b91c1c;
+        font-weight: 600;
+      }
+
+      .empty-state {
+        margin: 2rem 0;
+        text-align: center;
+        color: var(--text-muted);
+        font-size: 1rem;
       }
 
       .back-button {
@@ -162,10 +209,43 @@
       .options {
         margin: 0;
         padding-left: 1.2rem;
+        list-style-position: inside;
       }
 
-      .options li + li {
-        margin-top: 0.35rem;
+      .option {
+        background: rgba(255, 255, 255, 0.6);
+        border-radius: 12px;
+        padding: 0.6rem 0.75rem;
+        margin: 0.45rem 0;
+        border: 1px solid rgba(148, 163, 184, 0.3);
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+      }
+
+      .option.correct {
+        border-color: rgba(34, 197, 94, 0.45);
+        background: rgba(34, 197, 94, 0.18);
+        color: #047857;
+        font-weight: 600;
+      }
+
+      .option-badge {
+        display: inline-flex;
+        align-items: center;
+        padding: 0.1rem 0.45rem;
+        border-radius: 999px;
+        background: rgba(34, 197, 94, 0.25);
+        color: #047857;
+        font-size: 0.7rem;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+      }
+
+      .explanation {
+        margin-top: 0.75rem;
+        color: #2563eb;
+        font-size: 0.95rem;
       }
 
       .answer {
@@ -218,21 +298,28 @@
             <h1>Категории викторин</h1>
             <p class="subtitle">Выберите тему, чтобы перейти к подборке викторин.</p>
           </header>
-          <section class="grid">
-            {% for category in categories %}
-              <article
-                class="card"
-                hx-get="/category/{{ category.id }}"
-                hx-target="#content"
-                hx-push-url="true"
-                hx-indicator=".htmx-indicator"
-              >
-                <span class="badge">Категория</span>
-                <div class="card-title">{{ category.name }}</div>
-                <div class="card-description">{{ category.description }}</div>
-              </article>
-            {% endfor %}
-          </section>
+          {% if categories_error %}
+            <p class="notice">{{ categories_error }}</p>
+          {% endif %}
+          {% if categories %}
+            <section class="grid">
+              {% for category in categories %}
+                <article
+                  class="card"
+                  hx-get="/category/{{ category.id }}"
+                  hx-target="#content"
+                  hx-push-url="true"
+                  hx-indicator=".htmx-indicator"
+                >
+                  <span class="badge">Категория</span>
+                  <div class="card-title">{{ category.name }}</div>
+                  <div class="card-description">{{ category.description }}</div>
+                </article>
+              {% endfor %}
+            </section>
+          {% elif not categories_error %}
+            <p class="empty-state">Нет активных категорий для отображения.</p>
+          {% endif %}
         {% endif %}
       </div>
       <div class="htmx-indicator">

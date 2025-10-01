@@ -9,10 +9,15 @@
 </button>
 <header>
   <h1>{{ current_category.name }}</h1>
-  <p class="subtitle">Выберите викторину в выбранной категории.</p>
+  <p class="subtitle">
+    {{ current_category.description or "Выберите викторину в выбранной категории." }}
+  </p>
 </header>
-<section class="grid">
-  {% if quizzes %}
+{% if quizzes_error %}
+  <p class="notice">{{ quizzes_error }}</p>
+{% endif %}
+{% if quizzes %}
+  <section class="grid">
     {% for quiz in quizzes %}
       <article
         class="card"
@@ -26,7 +31,7 @@
         <div class="card-description">Откройте, чтобы посмотреть список вопросов.</div>
       </article>
     {% endfor %}
-  {% else %}
-    <p>В этой категории пока нет активных викторин.</p>
-  {% endif %}
-</section>
+  </section>
+{% elif not quizzes_error %}
+  <p class="empty-state">В этой категории пока нет активных викторин.</p>
+{% endif %}
