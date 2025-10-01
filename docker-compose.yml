@@ -1,0 +1,9 @@
+version: '3.8'
+
+services:
+  bot:
+    image: telegram-bot-quiz
+    container_name: ramadan-quiz-bot
+    env_file:
+      - .env  # ✅ Используем переменные окружения из файла
+    restart: unless-stopped
