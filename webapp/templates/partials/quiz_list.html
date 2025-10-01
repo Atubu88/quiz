@@ -1,0 +1,27 @@
+{% if quizzes_error %}
+  <p class="notice">{{ quizzes_error }}</p>
+{% elif quizzes %}
+  <div class="quiz-grid">
+    {% for quiz in quizzes %}
+      <article class="quiz-card">
+        <div>
+          <h3 class="quiz-card__title">{{ quiz.title }}</h3>
+          <p class="quiz-card__description">{{ quiz.description }}</p>
+        </div>
+        <div class="quiz-card__actions">
+          <a
+            class="quiz-card__action"
+            hx-get="/quiz/{{ quiz.id }}"
+            hx-target="#content"
+            hx-push-url="true"
+            hx-indicator=".htmx-indicator"
+          >
+            Начать
+          </a>
+        </div>
+      </article>
+    {% endfor %}
+  </div>
+{% else %}
+  <p class="empty-state">В этой категории пока нет активных викторин.</p>
+{% endif %}

@@ -102,7 +102,7 @@ async def get_quizzes(category_id: int) -> tuple[list[dict[str, Any]], str | Non
     def _load() -> list[dict[str, Any]]:
         response = (
             supabase.table("quizzes")
-            .select("id,title,category_id,is_active")
+            .select("id,title,category_id,description,is_active")
             .eq("category_id", category_id)
             .eq("is_active", True)
             .order("title")
@@ -118,6 +118,8 @@ async def get_quizzes(category_id: int) -> tuple[list[dict[str, Any]], str | Non
                     "id": quiz_id,
                     "title": raw.get("title") or f"Викторина №{quiz_id}",
                     "category_id": category_id,
+                    "description": raw.get("description")
+                    or "Описание появится позже.",
                 }
             )
         return quizzes
@@ -238,6 +240,50 @@ def _is_hx(request: Request) -> bool:
     return request.headers.get("Hx-Request", "false").lower() == "true"
 
 
+async def _build_home_context(
+    request: Request,
+    selected_category_id: int | None = None,
+    *,
+    allow_fallback: bool = True,
+) -> dict[str, Any]:
+    categories, categories_error = await get_categories()
+
+    selected_category: dict[str, Any] | None = None
+    if selected_category_id is not None:
+        selected_category = next(
+            (item for item in categories if item["id"] == selected_category_id),
+            None,
+        )
+        if selected_category is None:
+            selected_category = await get_category_by_id(selected_category_id)
+            if selected_category is not None and all(
+                item["id"] != selected_category["id"] for item in categories
+            ):
+                categories = categories + [selected_category]
+                categories = sorted(categories, key=lambda item: item["name"].lower())
+
+    if selected_category is None and categories and allow_fallback:
+        selected_category = categories[0]
+        selected_category_id = selected_category["id"]
+
+    quizzes: list[dict[str, Any]] = []
+    quizzes_error: str | None = None
+    if selected_category is not None:
+        quizzes, quizzes_error = await get_quizzes(selected_category["id"])
+
+    context: dict[str, Any] = {
+        "request": request,
+        "active_view": "home",
+        "categories": categories,
+        "categories_error": categories_error,
+        "selected_category": selected_category,
+        "selected_category_id": selected_category_id,
+        "quizzes": quizzes,
+        "quizzes_error": quizzes_error,
+    }
+    return context
+
+
 async def _get_quiz_or_error(quiz_id: int) -> dict[str, Any]:
     quiz, quiz_error = await get_quiz_detail(quiz_id)
     if quiz is None:
@@ -258,38 +304,42 @@ def _find_question(
 
 @app.get("/", response_class=HTMLResponse)
 async def read_categories(request: Request) -> HTMLResponse:
-    categories, categories_error = await get_categories()
-    context = {
-        "request": request,
-        "categories": categories,
-        "categories_error": categories_error,
-        "active_view": "categories",
-    }
+    selected_param = _to_int(request.query_params.get("category"))
+    context = await _build_home_context(request, selected_param)
+    if _is_hx(request):
+        return templates.TemplateResponse("partials/home.html", context)
     return templates.TemplateResponse("index.html", context)
 
 
 @app.get("/category/{category_id}", response_class=HTMLResponse)
 async def read_category(category_id: int, request: Request) -> HTMLResponse:
-    categories, categories_error = await get_categories()
-    category = next((item for item in categories if item["id"] == category_id), None)
-    if category is None:
-        category = await get_category_by_id(category_id)
+    context = await _build_home_context(
+        request, category_id, allow_fallback=False
+    )
+    selected_category = context.get("selected_category")
+    if selected_category is None or selected_category.get("id") != category_id:
+        raise HTTPException(status_code=404, detail="Категория не найдена")
+    if _is_hx(request):
+        return templates.TemplateResponse("partials/home.html", context)
+    return templates.TemplateResponse("index.html", context)
+
+
+@app.get("/category/{category_id}/quizzes", response_class=HTMLResponse)
+async def read_category_quizzes(
+    category_id: int, request: Request
+) -> HTMLResponse:
+    category = await get_category_by_id(category_id)
     if category is None:
         raise HTTPException(status_code=404, detail="Категория не найдена")
-
-    quizzes, quizzes_error = await get_quizzes(category["id"])
+    quizzes, quizzes_error = await get_quizzes(category_id)
     context = {
         "request": request,
-        "categories": categories,
-        "categories_error": categories_error,
-        "active_view": "category",
-        "current_category": category,
+        "selected_category": category,
+        "selected_category_id": category_id,
         "quizzes": quizzes,
         "quizzes_error": quizzes_error,
     }
-    if _is_hx(request):
-        return templates.TemplateResponse("category.html", context)
-    return templates.TemplateResponse("index.html", context)
+    return templates.TemplateResponse("partials/quiz_list.html", context)
 
 
 @app.get("/quiz/{quiz_id}", response_class=HTMLResponse)

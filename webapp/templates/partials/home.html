@@ -1,0 +1,53 @@
+<section class="home-header">
+  <span class="home-header__eyebrow">Подборка викторин</span>
+  <h1 class="home-header__title">Выбирайте тему и проходите тесты в один клик</h1>
+  <p class="home-header__subtitle">
+    Листайте категории по горизонтали и мгновенно получайте список викторин. Никаких
+    перезагрузок — только динамический контент на HTMX.
+  </p>
+</section>
+
+{% if categories_error %}
+  <p class="notice">{{ categories_error }}</p>
+{% endif %}
+
+{% if categories %}
+  <section class="categories-section">
+    <div
+      class="categories-scroll"
+      role="tablist"
+      aria-label="Категории викторин"
+      data-category-bar
+    >
+      {% for category in categories %}
+        <button
+          type="button"
+          class="category-chip{% if category.id == selected_category_id %} is-active{% endif %}"
+          role="tab"
+          aria-selected="{{ 'true' if category.id == selected_category_id else 'false' }}"
+          hx-get="/category/{{ category.id }}/quizzes"
+          hx-target="#quiz-list"
+          hx-swap="innerHTML"
+          hx-push-url="/?category={{ category.id }}"
+          hx-indicator=".htmx-indicator"
+        >
+          <span class="category-chip__title">{{ category.name }}</span>
+          <span class="category-chip__desc">{{ category.description }}</span>
+        </button>
+      {% endfor %}
+    </div>
+  </section>
+{% else %}
+  <p class="empty-state">Нет активных категорий для отображения.</p>
+{% endif %}
+
+{% if selected_category %}
+  <section class="category-summary">
+    <h2 class="category-summary__title">{{ selected_category.name }}</h2>
+    <p class="category-summary__description">{{ selected_category.description }}</p>
+  </section>
+{% endif %}
+
+<section id="quiz-list">
+  {% include "partials/quiz_list.html" %}
+</section>
