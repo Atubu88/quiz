@@ -39,3 +39,4 @@ alembic/versions/*.pyc
 *.tar.gz
 *.rar
 .DS_Store
+.venv/
