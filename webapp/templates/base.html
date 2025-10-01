@@ -5,9 +5,16 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="theme-color" content="#0f172a">
     <title>{% block title %}Quiz WebApp{% endblock %}</title>
+
+    <!-- TailwindCSS -->
     <script src="https://cdn.tailwindcss.com?plugins=forms"></script>
-    <script src="https://unpkg.com/htmx.org@1.9.12" integrity="sha384-xFADjDfsAbHn84qxdjQ671O5jM90oCbGyF/F7fs/3Gzdh0dX8GZFOD9oTi27Cw2x" crossorigin="anonymous"></script>
+
+    <!-- HTMX (исправленный вариант без старого integrity) -->
+    <script src="https://unpkg.com/htmx.org@1.9.12"></script>
+
+    <!-- Telegram WebApp SDK -->
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
+
     <script>
         document.addEventListener('DOMContentLoaded', () => {
             if (window.Telegram?.WebApp) {
@@ -17,6 +24,7 @@
             }
         });
     </script>
+
     {% block head %}{% endblock %}
 </head>
 <body class="h-full bg-slate-900 text-slate-100">
