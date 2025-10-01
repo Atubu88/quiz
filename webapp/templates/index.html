@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+
+{% block title %}Викторины | Quiz WebApp{% endblock %}
+
+{% block content %}
+<section class="space-y-4">
+    <div class="bg-slate-800/60 border border-slate-700 rounded-xl p-4 shadow">
+        <h2 class="text-lg font-medium text-white">Доступные викторины</h2>
+        <p class="text-sm text-slate-400 mt-1">Выберите тест, чтобы просмотреть вопросы и начать прохождение.</p>
+    </div>
+
+    {% if load_error %}
+        <div class="border border-amber-500/40 bg-amber-900/40 text-amber-200 text-sm rounded-lg p-4">
+            {{ load_error }}
+        </div>
+    {% endif %}
+
+    <div class="grid gap-3" id="quiz-list">
+        {% if quizzes %}
+            {% for quiz in quizzes %}
+                <button
+                    class="w-full text-left bg-slate-800/60 border border-slate-700 hover:border-sky-500 transition rounded-lg p-4 flex items-center justify-between"
+                    hx-get="{{ url_for('quiz_detail', quiz_id=quiz.id) }}"
+                    hx-target="#quiz-detail"
+                    hx-swap="innerHTML"
+                >
+                    <span class="text-base font-medium text-white">{{ quiz.title }}</span>
+                    <svg class="w-5 h-5 text-slate-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="m8.25 4.5 7.5 7.5-7.5 7.5" />
+                    </svg>
+                </button>
+            {% endfor %}
+        {% else %}
+            <div class="text-sm text-slate-400 border border-dashed border-slate-700 rounded-lg p-4 text-center">
+                Викторины не найдены. Добавьте их через бота.
+            </div>
+        {% endif %}
+    </div>
+</section>
+
+<section class="mt-6" id="quiz-detail" hx-indicator="#quiz-loader">
+    <div class="border border-dashed border-slate-700 rounded-xl p-6 text-center text-slate-400">
+        Выберите викторину, чтобы увидеть вопросы.
+    </div>
+</section>
+
+<div id="quiz-loader" class="htmx-indicator hidden mt-4 text-center text-slate-400">
+    Загружаем вопросы…
+</div>
+{% endblock %}

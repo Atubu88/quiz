@@ -1,0 +1,44 @@
+{% if error %}
+    <div class="border border-amber-500/40 bg-amber-900/40 text-amber-100 rounded-xl p-5 text-sm">
+        {{ error }}
+    </div>
+{% elif not quiz %}
+    <div class="border border-rose-500/40 bg-rose-900/40 text-rose-100 rounded-xl p-5 text-sm">
+        Викторина не найдена.
+    </div>
+{% else %}
+    <div class="bg-slate-800/60 border border-slate-700 rounded-2xl shadow divide-y divide-slate-700/70">
+        <div class="p-5">
+            <h2 class="text-xl font-semibold text-white">{{ quiz.title }}</h2>
+            <p class="text-sm text-slate-400 mt-1">Всего вопросов: {{ questions|length }}</p>
+        </div>
+        <ol class="space-y-0">
+            {% for question in questions %}
+                <li class="p-5 space-y-4">
+                    <div>
+                        <p class="text-sm uppercase tracking-wide text-slate-500">Вопрос {{ loop.index }}</p>
+                        <p class="mt-1 text-base text-white">{{ question.text }}</p>
+                    </div>
+                    <div class="space-y-2">
+                        {% for option in question.options %}
+                            <div class="flex items-start gap-2 rounded-lg border border-slate-700/80 bg-slate-900/60 px-3 py-2">
+                                <span class="mt-1 h-2.5 w-2.5 rounded-full bg-slate-600"></span>
+                                <span class="text-sm text-slate-200">{{ option.text }}</span>
+                                {% if option.is_correct %}
+                                    <span class="ml-auto text-xs font-medium text-emerald-400">верный ответ</span>
+                                {% endif %}
+                            </div>
+                        {% endfor %}
+                    </div>
+                    {% if question.explanation %}
+                        <div class="rounded-lg border border-sky-500/40 bg-sky-950/40 px-3 py-2 text-sm text-sky-200">
+                            {{ question.explanation }}
+                        </div>
+                    {% endif %}
+                </li>
+            {% else %}
+                <li class="p-5 text-sm text-slate-400">Для этой викторины ещё не добавлены вопросы.</li>
+            {% endfor %}
+        </ol>
+    </div>
+{% endif %}
