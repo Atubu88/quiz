@@ -1,15 +1,21 @@
 """Мини-пример FastAPI + HTMX для викторин с реальными данными из Supabase."""
 from __future__ import annotations
 
+import hashlib
+import hmac
+import json
 import logging
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qsl
 
 from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
+from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
+from config import BOT_TOKEN
 from supabase_client import supabase
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -20,6 +26,72 @@ templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 app = FastAPI(title="HTMX Quiz Preview", version="0.2.0")
 
 logger = logging.getLogger(__name__)
+
+
+class TelegramUser(BaseModel):
+    id: int
+    username: str | None = None
+    first_name: str
+    last_name: str | None = None
+
+
+class LoginPayload(BaseModel):
+    init_data: str = Field(..., alias="initData")
+    user: TelegramUser
+
+
+def _verify_telegram_hash(init_data: str) -> dict[str, str]:
+    if not init_data:
+        raise HTTPException(status_code=400, detail="initData is required")
+    if not BOT_TOKEN:
+        logger.error("BOT_TOKEN is not configured for signature verification")
+        raise HTTPException(status_code=500, detail="Telegram integration is not configured")
+
+    parsed_data = dict(parse_qsl(init_data, keep_blank_values=True))
+    hash_value = parsed_data.pop("hash", None)
+    if not hash_value:
+        raise HTTPException(status_code=400, detail="Hash is missing from initData")
+
+    data_check_string = "\n".join(f"{key}={value}" for key, value in sorted(parsed_data.items()))
+
+    secret_key = hashlib.sha256(BOT_TOKEN.encode()).digest()
+    expected_hash = hmac.new(secret_key, data_check_string.encode(), hashlib.sha256).hexdigest()
+
+    if not hmac.compare_digest(expected_hash, hash_value):
+        raise HTTPException(status_code=403, detail="Invalid Telegram hash")
+
+    return parsed_data
+
+
+def _upsert_user(user: TelegramUser) -> dict[str, Any]:
+    response = (
+        supabase.table("users")
+        .upsert(
+            {
+                "telegram_id": user.id,
+                "username": user.username or "",
+                "first_name": user.first_name,
+                "last_name": user.last_name or "",
+            },
+            on_conflict="telegram_id",
+        )
+        .execute()
+    )
+    if getattr(response, "error", None):
+        logger.error(
+            "Failed to upsert user in Supabase",
+            extra={
+                "status_code": getattr(response, "status_code", None),
+                "error": response.error,
+            },
+        )
+        raise HTTPException(status_code=500, detail="Failed to store user")
+    return {
+        "telegram_id": user.id,
+        "username": user.username or "",
+        "first_name": user.first_name,
+        "last_name": user.last_name or "",
+    }
 
 
 def _to_int(value: Any) -> int | None:
@@ -309,6 +381,24 @@ async def read_categories(request: Request) -> HTMLResponse:
     if _is_hx(request):
         return templates.TemplateResponse("partials/home.html", context)
     return templates.TemplateResponse("index.html", context)
+
+
+@app.post("/login")
+async def login(payload: LoginPayload) -> dict[str, Any]:
+    parsed_data = _verify_telegram_hash(payload.init_data)
+
+    user_json = parsed_data.get("user")
+    if user_json:
+        try:
+            decoded_user = json.loads(user_json)
+        except json.JSONDecodeError as exc:  # pragma: no cover - defensive programming
+            logger.warning("Failed to decode user JSON from initData", exc_info=exc)
+        else:
+            if str(decoded_user.get("id")) != str(payload.user.id):
+                raise HTTPException(status_code=403, detail="User data mismatch")
+
+    stored_user = await run_in_threadpool(_upsert_user, payload.user)
+    return {"status": "ok", "user": stored_user}
 
 
 @app.get("/category/{category_id}", response_class=HTMLResponse)
