@@ -1,12 +1,16 @@
-{% if selected_category %}
-  <section class="category-summary">
-    <h2 class="category-summary__title">{{ selected_category.name }}</h2>
-    <p class="category-summary__description">{{ selected_category.description }}</p>
-  </section>
-{% else %}
-  <p class="empty-state">Выберите категорию, чтобы увидеть доступные викторины.</p>
-{% endif %}
+<div class="category-panel__header">
+  {% if selected_category %}
+    <section class="category-summary">
+      <h2 class="category-summary__title">{{ selected_category.name }}</h2>
+      <p class="category-summary__description">{{ selected_category.description }}</p>
+    </section>
+  {% else %}
+    <p class="empty-state">Выберите категорию, чтобы увидеть доступные викторины.</p>
+  {% endif %}
+</div>
 
-<section id="quiz-list">
-  {% include "partials/quiz_list.html" %}
-</section>
+<div class="category-panel__scroller" role="region" aria-live="polite">
+  <section id="quiz-list">
+    {% include "partials/quiz_list.html" %}
+  </section>
+</div>
