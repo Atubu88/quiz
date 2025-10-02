@@ -2,6 +2,30 @@
   <div class="home-view__pinned">
     <section class="home-header">
       <span class="home-header__eyebrow">Подборка викторин</span>
+      {% if current_user %}
+        <h1 class="home-header__title">Привет, {{ current_user.first_name or current_user.username or 'друг' }}!</h1>
+        <p class="home-header__subtitle">Готов продолжить викторины? Выбери категорию ниже.</p>
+      {% else %}
+        <h1 class="home-header__title">Готовы проверить свои знания?</h1>
+        <p class="home-header__subtitle">Авторизуйтесь через Telegram, чтобы сохранять прогресс и участвовать в рейтингах.</p>
+        <div class="home-header__auth">
+          {% if telegram_bot_username %}
+            <script
+              async
+              src="https://telegram.org/js/telegram-widget.js?22"
+              data-telegram-login="{{ telegram_bot_username }}"
+              data-size="large"
+              data-userpic="false"
+              data-onauth="onTelegramAuth(user)"
+              data-request-access="write"
+            ></script>
+          {% else %}
+            <button type="button" class="telegram-login-button" disabled>
+              Telegram Login недоступен
+            </button>
+          {% endif %}
+        </div>
+      {% endif %}
     </section>
 
     {% if categories_error %}

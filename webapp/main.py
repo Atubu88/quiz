@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 from typing import Any
 
@@ -12,14 +13,19 @@ from starlette.concurrency import run_in_threadpool
 
 from supabase_client import supabase
 
+from .auth.telegram import get_user_from_supabase, router as telegram_auth_router
+
 BASE_DIR = Path(__file__).resolve().parent
 TEMPLATES_DIR = BASE_DIR / "templates"
 
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
 app = FastAPI(title="HTMX Quiz Preview", version="0.2.0")
+app.include_router(telegram_auth_router)
 
 logger = logging.getLogger(__name__)
+
+TELEGRAM_BOT_USERNAME = os.getenv("TELEGRAM_BOT_USERNAME")
 
 
 def _to_int(value: Any) -> int | None:
@@ -240,12 +246,25 @@ def _is_hx(request: Request) -> bool:
     return request.headers.get("Hx-Request", "false").lower() == "true"
 
 
+async def _get_current_user(request: Request) -> dict[str, Any] | None:
+    raw_user_id = request.cookies.get("user_id")
+    user_id = _to_int(raw_user_id)
+    if user_id is None:
+        return None
+    try:
+        return await get_user_from_supabase(user_id)
+    except HTTPException:
+        logger.warning("Не удалось получить текущего пользователя из Supabase")
+        return None
+
+
 async def _build_home_context(
     request: Request,
     selected_category_id: int | None = None,
     *,
     allow_fallback: bool = True,
 ) -> dict[str, Any]:
+    current_user = await _get_current_user(request)
     categories, categories_error = await get_categories()
 
     selected_category: dict[str, Any] | None = None
@@ -274,12 +293,14 @@ async def _build_home_context(
     context: dict[str, Any] = {
         "request": request,
         "active_view": "home",
+        "current_user": current_user,
         "categories": categories,
         "categories_error": categories_error,
         "selected_category": selected_category,
         "selected_category_id": selected_category_id,
         "quizzes": quizzes,
         "quizzes_error": quizzes_error,
+        "telegram_bot_username": TELEGRAM_BOT_USERNAME,
     }
     return context
 
@@ -334,10 +355,12 @@ async def read_category_quizzes(
     quizzes, quizzes_error = await get_quizzes(category_id)
     context = {
         "request": request,
+        "current_user": await _get_current_user(request),
         "selected_category": category,
         "selected_category_id": category_id,
         "quizzes": quizzes,
         "quizzes_error": quizzes_error,
+        "telegram_bot_username": TELEGRAM_BOT_USERNAME,
     }
     return templates.TemplateResponse("partials/category_panel.html", context)
 
@@ -361,9 +384,11 @@ async def read_quiz(quiz_id: int, request: Request) -> HTMLResponse:
     context = {
         "request": request,
         "active_view": "quiz",
+        "current_user": await _get_current_user(request),
         "current_category": current_category,
         "quiz": quiz,
         "quiz_error": quiz_error,
+        "telegram_bot_username": TELEGRAM_BOT_USERNAME,
     }
     if _is_hx(request):
         return templates.TemplateResponse("quiz.html", context)
@@ -388,6 +413,7 @@ async def read_quiz_question(
         last_question = quiz.get("questions", [])[-1] if total_questions else None
         context = {
             "request": request,
+            "current_user": await _get_current_user(request),
             "quiz": quiz,
             "correct_count": safe_correct_count,
             "total_questions": total_questions,
@@ -395,6 +421,7 @@ async def read_quiz_question(
             "last_question_index": total_questions if total_questions else None,
             "selected_option_id": None,
             "is_correct": None,
+            "telegram_bot_username": TELEGRAM_BOT_USERNAME,
         }
         return templates.TemplateResponse("quiz_result.html", context)
 
@@ -408,6 +435,7 @@ async def read_quiz_question(
 
     context = {
         "request": request,
+        "current_user": await _get_current_user(request),
         "quiz_id": quiz_id,
         "quiz": quiz,
         "question": question,
@@ -419,6 +447,7 @@ async def read_quiz_question(
         "selected_option_id": None,
         "next_question_id": next_question_id,
         "quiz_completed": False,
+        "telegram_bot_username": TELEGRAM_BOT_USERNAME,
     }
     return templates.TemplateResponse("quiz_question.html", context)
 
@@ -453,6 +482,7 @@ async def submit_quiz_answer(
     if updated_answered_count >= total_questions:
         context = {
             "request": request,
+            "current_user": await _get_current_user(request),
             "quiz": quiz,
             "correct_count": updated_correct_count,
             "total_questions": total_questions,
@@ -460,6 +490,7 @@ async def submit_quiz_answer(
             "last_question_index": index + 1,
             "selected_option_id": option_id,
             "is_correct": is_correct,
+            "telegram_bot_username": TELEGRAM_BOT_USERNAME,
         }
         return templates.TemplateResponse("quiz_result.html", context)
 
@@ -467,6 +498,7 @@ async def submit_quiz_answer(
 
     context = {
         "request": request,
+        "current_user": await _get_current_user(request),
         "quiz_id": quiz_id,
         "quiz": quiz,
         "question": question,
@@ -479,5 +511,6 @@ async def submit_quiz_answer(
         "next_question_id": next_question_id,
         "quiz_completed": False,
         "is_correct": is_correct,
+        "telegram_bot_username": TELEGRAM_BOT_USERNAME,
     }
     return templates.TemplateResponse("quiz_question.html", context)
