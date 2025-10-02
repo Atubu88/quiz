@@ -17,11 +17,30 @@
 
     <script>
         document.addEventListener('DOMContentLoaded', () => {
-            if (window.Telegram?.WebApp) {
-                const webApp = window.Telegram.WebApp;
-                webApp.expand();
-                webApp.ready();
+            if (!window.Telegram?.WebApp) {
+                return;
             }
+
+            const webApp = window.Telegram.WebApp;
+            webApp.expand();
+            webApp.ready();
+
+            const greetingEl = document.getElementById('tg-user-greeting');
+            if (!greetingEl) {
+                return;
+            }
+
+            const user = webApp.initDataUnsafe?.user;
+            if (!user) {
+                return;
+            }
+
+            const fullName = [user.first_name, user.last_name].filter(Boolean).join(' ');
+            const displayName = fullName || user.username || 'друг';
+            const usernameSuffix = user.username && fullName ? ` (@${user.username})` : '';
+
+            greetingEl.textContent = `Привет, ${displayName}${usernameSuffix}!`;
+            greetingEl.classList.remove('hidden');
         });
     </script>
 
@@ -32,6 +51,7 @@
         <header class="mb-6">
             <h1 class="text-2xl font-semibold text-white">{% block header %}Веб-викторина{% endblock %}</h1>
             <p class="text-slate-400 text-sm mt-1">Мини-приложение Telegram для прохождения тестов</p>
+            <p id="tg-user-greeting" class="text-slate-200 text-sm mt-2 hidden"></p>
         </header>
         <main>
             {% block content %}{% endblock %}
