@@ -17,11 +17,58 @@
 
     <script>
         document.addEventListener('DOMContentLoaded', () => {
-            if (window.Telegram?.WebApp) {
-                const webApp = window.Telegram.WebApp;
-                webApp.expand();
-                webApp.ready();
+            if (!window.Telegram?.WebApp) {
+                return;
             }
+
+            const webApp = window.Telegram.WebApp;
+            webApp.expand();
+            webApp.ready();
+
+            const user = webApp.initDataUnsafe?.user;
+
+            const greetingElement = document.getElementById('greeting');
+            if (user?.first_name && greetingElement) {
+                greetingElement.textContent = `Привет, ${user.first_name}!`;
+            }
+
+            if (!webApp.initData || !user) {
+                return;
+            }
+
+            const payload = {
+                initData: webApp.initData,
+                user: {
+                    id: user.id,
+                    username: user.username ?? null,
+                    first_name: user.first_name ?? '',
+                    last_name: user.last_name ?? null,
+                },
+            };
+
+            fetch('/login', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify(payload),
+            })
+                .then((response) => {
+                    if (!response.ok) {
+                        throw new Error(`Request failed with status ${response.status}`);
+                    }
+                    return response.json().catch(() => null);
+                })
+                .then((data) => {
+                    if (!data?.user?.first_name || !greetingElement) {
+                        return;
+                    }
+                    greetingElement.textContent = `Привет, ${data.user.first_name}!`;
+                    greetingElement.classList.remove('hidden');
+                })
+                .catch((error) => {
+                    console.error('Failed to authorize user', error);
+                });
         });
     </script>
 
@@ -32,6 +79,7 @@
         <header class="mb-6">
             <h1 class="text-2xl font-semibold text-white">{% block header %}Веб-викторина{% endblock %}</h1>
             <p class="text-slate-400 text-sm mt-1">Мини-приложение Telegram для прохождения тестов</p>
+            <p id="greeting" class="text-slate-200 text-base mt-2 hidden"></p>
         </header>
         <main>
             {% block content %}{% endblock %}
