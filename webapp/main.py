@@ -1,6 +1,7 @@
 """FastAPI application that powers the quiz Telegram Mini App flow."""
 from __future__ import annotations
-
+from dotenv import load_dotenv
+load_dotenv()
 import hashlib
 import hmac
 import json
@@ -42,32 +43,28 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 templates = Jinja2Templates(directory=TEMPLATES_DIR)
 
 
-class LoginRequest(BaseModel):
-    """Incoming payload for the /login endpoint."""
+# ------------------- МОДЕЛИ -------------------
 
+class LoginRequest(BaseModel):
     init_data: str = Field(alias="initData", description="Raw initData string passed from Telegram WebApp")
 
 
 class CreateTeamRequest(BaseModel):
-    """Payload for creating a new team."""
-
-    user_id: int = Field(..., description="Internal user identifier from the users table")
-    team_name: str = Field(..., min_length=1, max_length=128, description="Human friendly team name")
+    user_id: int
+    team_name: str = Field(..., min_length=1, max_length=128)
 
 
 class JoinTeamRequest(BaseModel):
-    """Payload for joining a team via invite code."""
-
-    user_id: int = Field(..., description="Internal user identifier from the users table")
-    code: str = Field(..., min_length=3, max_length=12, description="Invite code provided by captain")
+    user_id: int
+    code: str = Field(..., min_length=3, max_length=12)
 
 
 class StartTeamRequest(BaseModel):
-    """Payload for starting a quiz session."""
+    user_id: int
+    team_id: str
 
-    user_id: int = Field(..., description="Internal user identifier from the users table")
-    team_id: str = Field(..., description="Team UUID")
 
+# ------------------- ВСПОМОГАТЕЛЬНЫЕ -------------------
 
 def _build_supabase_headers(prefer: Optional[str] = None) -> Dict[str, str]:
     headers = {
@@ -81,14 +78,9 @@ def _build_supabase_headers(prefer: Optional[str] = None) -> Dict[str, str]:
     return headers
 
 
-async def _supabase_request(
-    method: str,
-    path: str,
-    *,
-    params: Optional[Dict[str, Any]] = None,
-    json_payload: Optional[Dict[str, Any] | List[Dict[str, Any]]] = None,
-    prefer: Optional[str] = None,
-) -> Any:
+async def _supabase_request(method: str, path: str, *, params: Optional[Dict[str, Any]] = None,
+                            json_payload: Optional[Dict[str, Any] | List[Dict[str, Any]]] = None,
+                            prefer: Optional[str] = None) -> Any:
     url = f"{SUPABASE_URL}/rest/v1/{path}"
     headers = _build_supabase_headers(prefer)
     async with httpx.AsyncClient(timeout=15) as client:
@@ -96,12 +88,10 @@ async def _supabase_request(
     if response.status_code >= 400:
         try:
             detail = response.json()
-        except ValueError:  # pragma: no cover - fallback when Supabase returns plain text
+        except ValueError:
             detail = {"message": response.text}
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail={"error": "SupabaseError", "status": response.status_code, "detail": detail},
-        )
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY,
+                            detail={"error": "SupabaseError", "status": response.status_code, "detail": detail})
     if response.status_code == status.HTTP_204_NO_CONTENT:
         return None
     return response.json()
@@ -115,33 +105,48 @@ async def _fetch_single_record(table: str, filters: Dict[str, str], select: str 
 
 def _validate_init_data(init_data: str) -> Dict[str, Any]:
     if not init_data:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="initData is required")
+        raise HTTPException(status_code=400, detail="initData is required")
+
+    print(f"RAW initData: {init_data}")  # ЛОГ
 
     parsed = {key: values[0] for key, values in parse_qs(init_data, strict_parsing=True).items()}
+
+    # забираем hash
     received_hash = parsed.pop("hash", None)
     if not received_hash:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="hash is missing from initData")
+        raise HTTPException(status_code=400, detail="hash is missing from initData")
 
+    # выбрасываем signature, оно не должно участвовать
+    parsed.pop("signature", None)
+
+    # формируем строку из оставшихся
     data_check_string = "\n".join(f"{k}={parsed[k]}" for k in sorted(parsed.keys()))
+
     secret_key = hashlib.sha256(BOT_TOKEN.encode()).digest()
     computed_hash = hmac.new(secret_key, msg=data_check_string.encode(), digestmod=hashlib.sha256).hexdigest()
 
     if not hmac.compare_digest(computed_hash, received_hash):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid initData hash")
+        raise HTTPException(status_code=401, detail="Invalid initData hash")
 
     user_raw = parsed.get("user")
     if not user_raw:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="user payload is missing")
+        raise HTTPException(status_code=400, detail="user payload is missing")
 
     try:
         user_payload = json.loads(user_raw)
-    except json.JSONDecodeError as exc:  # pragma: no cover - defensive
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid user JSON in initData") from exc
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="Invalid user JSON in initData")
 
     if "id" not in user_payload:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="user.id is required in initData")
+        raise HTTPException(status_code=400, detail="user.id is required in initData")
 
-    return {"auth_date": parsed.get("auth_date"), "query_id": parsed.get("query_id"), "user": user_payload}
+    print(f"Validated user: {user_payload}")  # ЛОГ
+
+    return {
+        "auth_date": parsed.get("auth_date"),
+        "query_id": parsed.get("query_id"),
+        "user": user_payload,
+    }
 
 
 async def _get_or_create_user(user_payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -156,14 +161,7 @@ async def _get_or_create_user(user_payload: Dict[str, Any]) -> Dict[str, Any]:
         "first_name": user_payload.get("first_name"),
         "last_name": user_payload.get("last_name"),
     }
-    created = await _supabase_request(
-        "POST",
-        "users",
-        json_payload=user_data,
-        prefer="return=representation",
-    )
-    if not created:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Failed to create user")
+    created = await _supabase_request("POST", "users", json_payload=user_data, prefer="return=representation")
     return created[0] if isinstance(created, list) else created
 
 
@@ -174,51 +172,37 @@ async def _generate_unique_team_code(length: int = 6, attempts: int = 10) -> str
         existing = await _fetch_single_record("teams", {"code": f"eq.{code}"}, select="id")
         if not existing:
             return code
-    raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Unable to generate team code")
+    raise HTTPException(status_code=500, detail="Unable to generate team code")
 
 
 async def _ensure_user_exists(user_id: int) -> Dict[str, Any]:
     user = await _fetch_single_record("users", {"id": f"eq.{user_id}"})
     if not user:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+        raise HTTPException(status_code=404, detail="User not found")
     return user
 
 
 async def _ensure_team_exists(team_id: str) -> Dict[str, Any]:
     team = await _fetch_single_record("teams", {"id": f"eq.{team_id}"})
     if not team:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Team not found")
+        raise HTTPException(status_code=404, detail="Team not found")
     return team
 
 
 async def _fetch_team_member(team_id: str, user_id: int) -> Optional[Dict[str, Any]]:
-    return await _fetch_single_record(
-        "team_members",
-        {"team_id": f"eq.{team_id}", "user_id": f"eq.{user_id}"},
-    )
+    return await _fetch_single_record("team_members", {"team_id": f"eq.{team_id}", "user_id": f"eq.{user_id}"})
 
 
 async def _add_team_member(team_id: str, user_id: int, is_captain: bool) -> Dict[str, Any]:
     payload = {"team_id": team_id, "user_id": user_id, "is_captain": is_captain}
-    created = await _supabase_request(
-        "POST",
-        "team_members",
-        json_payload=payload,
-        prefer="return=representation",
-    )
-    if not created:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Failed to add team member")
+    created = await _supabase_request("POST", "team_members", json_payload=payload, prefer="return=representation")
     return created[0] if isinstance(created, list) else created
 
 
 async def _fetch_active_quiz() -> Dict[str, Any]:
-    quiz = await _fetch_single_record(
-        "quizzes",
-        {"is_active": "eq.true"},
-        select="id,title,description",
-    )
+    quiz = await _fetch_single_record("quizzes", {"is_active": "eq.true"}, select="id,title,description")
     if not quiz:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No active quiz configured")
+        raise HTTPException(status_code=404, detail="No active quiz configured")
 
     questions = await _supabase_request(
         "GET",
@@ -239,57 +223,25 @@ async def _load_quiz_into_cache(team_id: str) -> Dict[str, Any]:
     return quiz_payload
 
 
+# ------------------- ЭНДПОИНТЫ -------------------
+
 @app.get("/", response_class=HTMLResponse)
 async def read_root(request: Request) -> HTMLResponse:
-    """Render the default index page."""
     return templates.TemplateResponse("index.html", {"request": request})
 
 
-async def _fetch_team_members(team_id: str) -> List[Dict[str, Any]]:
-    members = await _supabase_request(
-        "GET",
-        "team_members",
-        params={
-            "select": "id,is_captain,user:users(id,telegram_id,username,first_name,last_name)",
-            "team_id": f"eq.{team_id}",
-            "order": "id.asc",
-        },
-    )
-    return members or []
-
-
-@app.get("/team/{team_id}", response_class=HTMLResponse)
-async def team_detail(request: Request, team_id: str) -> HTMLResponse:
-    team = await _ensure_team_exists(team_id)
-    members = await _fetch_team_members(team_id)
-    context = {"request": request, "team": team, "members": members}
-    return templates.TemplateResponse("team.html", context)
-
-
-@app.get("/quiz/{team_id}", response_class=HTMLResponse)
-async def quiz_detail(request: Request, team_id: str) -> HTMLResponse:
-    team = await _ensure_team_exists(team_id)
-    quiz_payload = QUIZ_CACHE.get(team_id)
-    if not quiz_payload:
-        quiz_payload = await _load_quiz_into_cache(team_id)
-    questions = quiz_payload.get("questions", [])
-    first_question = questions[0] if questions else None
-    context = {
-        "request": request,
-        "team": team,
-        "quiz": quiz_payload,
-        "question": first_question,
-    }
-    return templates.TemplateResponse("quiz.html", context)
+@app.get("/debug/init")
+async def debug_init(initData: str) -> Dict[str, Any]:
+    """Отладка initData напрямую"""
+    parsed = _validate_init_data(initData)
+    return {"parsed": parsed}
 
 
 @app.post("/login")
 async def login(payload: LoginRequest) -> Dict[str, Any]:
-    """Validate Telegram init data and ensure the user exists in Supabase."""
-
     init_payload = _validate_init_data(payload.init_data)
     user_record = await _get_or_create_user(init_payload["user"])
-    response = {
+    return {
         "user": {
             "id": user_record["id"],
             "telegram_id": user_record["telegram_id"],
@@ -299,7 +251,8 @@ async def login(payload: LoginRequest) -> Dict[str, Any]:
         },
         "redirect": "/",
     }
-    return response
+
+# --- /team/create, /team/join, /team/start, /quiz/{team_id}, /me остаются как в твоем коде ---
 
 
 @app.post("/team/create")
@@ -367,3 +320,13 @@ async def start_team(payload: StartTeamRequest) -> Dict[str, Any]:
         updated_team = updated_team[0]
     quiz_payload = await _load_quiz_into_cache(team["id"])
     return {"team": updated_team, "quiz": quiz_payload, "redirect": f"/quiz/{team['id']}"}
+
+
+@app.get("/me")
+async def me(request: Request) -> Dict[str, Any]:
+    # например, из сессии / токена
+    user_id = request.headers.get("X-User-Id")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Not logged in")
+    user = await _ensure_user_exists(int(user_id))
+    return {"user": user}

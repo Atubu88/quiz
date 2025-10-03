@@ -59,7 +59,32 @@
 
 {% block scripts %}
   {{ super() }}
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <script>
+    const tg = window.Telegram.WebApp;
+    tg.ready();
+
+    // сразу логиним пользователя при входе
+    if (tg.initData) {
+      fetch("/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ initData: tg.initData })
+      })
+      .then(r => r.json())
+      .then(data => {
+        console.log("Login response:", data);
+        const header = document.querySelector("h1.display-5");
+        if (data.user && data.user.first_name) {
+          header.textContent = `Привет, ${data.user.first_name}! Добро пожаловать в Викторину 🎉`;
+        }
+      })
+      .catch(err => console.error("Login error:", err));
+    } else {
+      console.warn("Нет tg.initData — проверяй запуск из Telegram Mini App");
+    }
+
+    // --- формы создания и присоединения ---
     const handleFormSubmit = (formId, responseId) => {
       const form = document.getElementById(formId);
       const responseContainer = document.getElementById(responseId);
