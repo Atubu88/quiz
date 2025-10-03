@@ -258,6 +258,46 @@ async def _add_team_member(team_id: str, user_id: int, is_captain: bool) -> Dict
     return created[0] if isinstance(created, list) else created
 
 
+async def _fetch_team_members(team_id: str) -> List[Dict[str, Any]]:
+    """Return a list of members with denormalised user fields."""
+
+    members_raw = await _supabase_request(
+        "GET",
+        "team_members",
+        params={
+            "team_id": f"eq.{team_id}",
+            "select": "id,is_captain,joined_at,user:users(id,telegram_id,username,first_name,last_name)",
+            "order": "joined_at.asc",
+        },
+    )
+
+    members: List[Dict[str, Any]] = []
+    for row in members_raw or []:
+        user_payload = row.get("user") or {}
+        full_name = " ".join(
+            part
+            for part in [user_payload.get("first_name"), user_payload.get("last_name")]
+            if part
+        ).strip()
+        members.append(
+            {
+                "id": user_payload.get("id"),
+                "telegram_id": user_payload.get("telegram_id"),
+                "username": user_payload.get("username"),
+                "name": full_name or user_payload.get("username") or "Без имени",
+                "is_captain": bool(row.get("is_captain")),
+            }
+        )
+
+    return members
+
+
+async def _fetch_team_with_members(team_id: str) -> Dict[str, Any]:
+    team = await _ensure_team_exists(team_id)
+    members = await _fetch_team_members(team_id)
+    return {**team, "members": members}
+
+
 TModel = TypeVar("TModel", bound=BaseModel)
 
 
@@ -343,7 +383,7 @@ def _build_team_context(
     request: Request,
     *,
     team: Dict[str, Any],
-    user: Dict[str, Any],
+    user: Optional[Dict[str, Any]] = None,
     member: Optional[Dict[str, Any]] = None,
     last_response: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
@@ -353,42 +393,48 @@ def _build_team_context(
 
     existing_members = team.get("members")
     if isinstance(existing_members, list):
-        members = existing_members
+        members = list(existing_members)
 
-    # Ensure the current user is present in the rendered list so that the template
-    # always shows at least one participant.
-    members_keys = {
-        (m.get("username"), m.get("name")) for m in members if isinstance(m, dict)
-    }
+    inferred_is_captain = False
+    captain_form_user_id: Optional[int] = None
 
-    user_key = (
-        user.get("username"),
-        user.get("first_name") or user.get("last_name") or user.get("username"),
-    )
+    if user:
+        # Ensure the current user is present in the rendered list so that the template
+        # always shows at least one participant.
+        members_keys = {
+            (m.get("username"), m.get("name")) for m in members if isinstance(m, dict)
+        }
 
-    inferred_is_captain = bool(
-        member.get("is_captain")
-        if member is not None
-        else team.get("captain_id") == user.get("telegram_id")
-    )
-
-    if user_key not in members_keys:
-        members.append(
-            _build_member_representation(
-                {
-                    "first_name": user.get("first_name"),
-                    "last_name": user.get("last_name"),
-                    "username": user.get("username"),
-                },
-                is_captain=inferred_is_captain,
-            )
+        user_key = (
+            user.get("username"),
+            user.get("first_name") or user.get("last_name") or user.get("username"),
         )
+
+        inferred_is_captain = bool(
+            member.get("is_captain")
+            if member is not None
+            else team.get("captain_id") == user.get("telegram_id")
+        )
+
+        if user_key not in members_keys:
+            members.append(
+                _build_member_representation(
+                    {
+                        "first_name": user.get("first_name"),
+                        "last_name": user.get("last_name"),
+                        "username": user.get("username"),
+                    },
+                    is_captain=inferred_is_captain,
+                )
+            )
+
+        captain_form_user_id = user.get("id")
 
     context = {
         "request": request,
         "team": {**team, "members": members},
         "user_is_captain": inferred_is_captain,
-        "captain_id": user.get("id"),
+        "captain_id": captain_form_user_id,
         "last_response": last_response,
     }
     return context
@@ -416,6 +462,38 @@ async def login(request: Request) -> HTMLResponse:
         "login_success": True,
     }
     return templates.TemplateResponse("index.html", context)
+
+
+
+@app.get("/team/{team_id}", response_class=HTMLResponse)
+async def view_team(team_id: str, request: Request, user_id: Optional[int] = None) -> HTMLResponse:
+    """Render the team page with the current member list."""
+
+    team = await _fetch_team_with_members(team_id)
+
+    user: Optional[Dict[str, Any]] = None
+    member: Optional[Dict[str, Any]] = None
+
+    if user_id is not None:
+        try:
+            user = await _ensure_user_exists(user_id)
+        except HTTPException as exc:
+            # Если пользователь не найден, просто отобразим команду без выделения капитана.
+            if exc.status_code != status.HTTP_404_NOT_FOUND:
+                raise
+        else:
+            member = next(
+                (m for m in team.get("members", []) if m.get("id") == user.get("id")),
+                None,
+            )
+
+    context = _build_team_context(
+        request,
+        team=team,
+        user=user,
+        member=member,
+    )
+    return templates.TemplateResponse("team.html", context)
 
 
 
@@ -449,26 +527,26 @@ async def create_team(request: Request) -> HTMLResponse:
 
     member = await _add_team_member(team_data["id"], user["id"], is_captain=True)
 
+    team_with_members = await _fetch_team_with_members(team_data["id"])
+    team_with_members.setdefault("code", code)
+
+    member_entry = next(
+        (m for m in team_with_members.get("members", []) if m.get("id") == user.get("id")),
+        None,
+    )
+
     if _is_json_request(request):
+        redirect_url = f"/team/{team_data['id']}?user_id={user['id']}"
         return JSONResponse(
-            {"team": team_data, "code": code, "redirect": f"/team/{team_data['id']}"}
+            {"team": team_with_members, "redirect": redirect_url}
         )
 
     context = _build_team_context(
         request,
-        team={**team_data, "code": code, "members": [
-            {
-                "id": user["id"],
-                "username": user.get("username"),
-                "name": f"{user.get('first_name', '')} {user.get('last_name', '')}".strip(),
-                "is_captain": True,
-            }
-        ]},
+        team=team_with_members,
         user=user,
-        member=member,
-        last_response={"team": team_data, "code": code},
-        user_is_captain=True,
-        captain_id=user["id"],
+        member=member_entry or member,
+        last_response={"team": team_with_members},
     )
     return templates.TemplateResponse("team.html", context)
 
@@ -488,15 +566,24 @@ async def join_team(request: Request) -> HTMLResponse:
     if not existing_member:
         existing_member = await _add_team_member(team["id"], user["id"], is_captain=False)
 
+    team_with_members = await _fetch_team_with_members(team["id"])
+    member_entry = next(
+        (m for m in team_with_members.get("members", []) if m.get("id") == user.get("id")),
+        None,
+    )
+
     if _is_json_request(request):
-        return JSONResponse({"team": team, "member": existing_member, "redirect": f"/team/{team['id']}"})
+        redirect_url = f"/team/{team['id']}?user_id={user['id']}"
+        return JSONResponse(
+            {"team": team_with_members, "member": member_entry or existing_member, "redirect": redirect_url}
+        )
 
     context = _build_team_context(
         request,
-        team=team,
+        team=team_with_members,
         user=user,
-        member=existing_member,
-        last_response={"team": team, "member": existing_member},
+        member=member_entry or existing_member,
+        last_response={"team": team_with_members, "member": member_entry or existing_member},
     )
     return templates.TemplateResponse("team.html", context)
 
