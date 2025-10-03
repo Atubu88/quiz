@@ -91,20 +91,49 @@ async def _supabase_request(
 ) -> Any:
     url = f"{SUPABASE_URL}/rest/v1/{path}"
     headers = _build_supabase_headers(prefer)
-    async with httpx.AsyncClient(timeout=15) as client:
-        response = await client.request(method, url, params=params, json=json_payload, headers=headers)
+
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            response = await client.request(method, url, params=params, json=json_payload, headers=headers)
+    except Exception as e:
+        logging.exception("❌ Network error to Supabase: %s", e)
+        # 502 только для сетевых ошибок
+        raise HTTPException(status_code=502, detail=f"Supabase network error: {str(e)}")
+
+    # ЛОГИРУЕМ ВСЁ
+    logging.debug(
+        "Supabase [%s %s] %s -> %s\nparams=%s\npayload=%s\nresp=%s",
+        method, path, response.status_code, url, params, json_payload, response.text
+    )
+
+    # Пробрасываем ИСХОДНЫЙ статус Supabase + текст
     if response.status_code >= 400:
+        # Пытаемся вытащить json, иначе отдаём сырой текст
         try:
             detail = response.json()
         except ValueError:
             detail = {"message": response.text}
         raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail={"error": "SupabaseError", "status": response.status_code, "detail": detail},
+            status_code=response.status_code,
+            detail={
+                "source": "Supabase",
+                "status": response.status_code,
+                "path": path,
+                "params": params,
+                "payload": json_payload,
+                "detail": detail,
+            },
         )
+
     if response.status_code == status.HTTP_204_NO_CONTENT:
         return None
-    return response.json()
+
+    try:
+        return response.json()
+    except ValueError:
+        # бывает пустой ответ/текст; возвращаем как есть
+        return response.text
+
 
 
 async def _fetch_single_record(table: str, filters: Dict[str, str], select: str = "*") -> Optional[Dict[str, Any]]:
@@ -252,16 +281,53 @@ async def _fetch_team_member(team_id: str, user_id: int) -> Optional[Dict[str, A
     return await _fetch_single_record("team_members", {"team_id": f"eq.{team_id}", "user_id": f"eq.{user_id}"})
 
 
-async def _add_team_member(team_id: str, user_id: int, is_captain: bool) -> Dict[str, Any]:
-    payload = {"team_id": team_id, "user_id": user_id, "is_captain": is_captain}
-    created = await _supabase_request("POST", "team_members", json_payload=payload, prefer="return=representation")
-    return created[0] if isinstance(created, list) else created
+async def _add_team_member(team_id: str, user_id: int, is_captain: bool = False):
+    payload = {
+        "team_id": team_id,
+        "user_id": user_id,      # ✅ именно PK из users.id
+        "is_captain": is_captain,
+    }
+
+    response = await _supabase_request(
+        "POST",
+        "team_members",
+        json_payload=payload,
+        prefer="return=representation",
+    )
+
+    if not response:
+        raise HTTPException(status_code=500, detail="Не удалось добавить участника")
+    return response[0] if isinstance(response, list) else response
+
+
+
+async def _find_existing_team_for_user(user: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Return the team the user already belongs to (if any)."""
+
+    # Проверяем наличие записи в таблице участников.
+    membership = await _fetch_single_record(
+        "team_members",
+        {"user_id": f"eq.{user['id']}"},
+        select="team_id",
+    )
+
+    if membership and membership.get("team_id"):
+        team = await _fetch_single_record("teams", {"id": f"eq.{membership['team_id']}"})
+        if team:
+            return team
+
+    # На случай, если запись участника отсутствует, но пользователь значится капитаном.
+    captain_team = await _fetch_single_record(
+        "teams", {"captain_id": f"eq.{user['telegram_id']}"}
+    )
+    if captain_team:
+        return captain_team
+
+    return None
 
 
 async def _fetch_team_members(team_id: str) -> List[Dict[str, Any]]:
     """Возвращает список участников команды с данными пользователя (без join в select)."""
-
-    # 1) забираем записи участників
     rows = await _supabase_request(
         "GET",
         "team_members",
@@ -272,7 +338,6 @@ async def _fetch_team_members(team_id: str) -> List[Dict[str, Any]]:
         },
     ) or []
 
-    # 2) собираем id пользователей
     user_ids = sorted({r.get("user_id") for r in rows if r.get("user_id") is not None})
     users_map: Dict[int, Dict[str, Any]] = {}
 
@@ -281,24 +346,17 @@ async def _fetch_team_members(team_id: str) -> List[Dict[str, Any]]:
         users = await _supabase_request(
             "GET",
             "users",
-            params={
-                "id": f"in.({in_list})",
-                "select": "id,telegram_id,username,first_name,last_name",
-            },
+            params={"id": f"in.({in_list})", "select": "id,telegram_id,username,first_name,last_name"},
         ) or []
         users_map = {u["id"]: u for u in users}
 
-    # 3) собираем удобные структуры для шаблона
     members: List[Dict[str, Any]] = []
     for r in rows:
         u = users_map.get(r["user_id"], {})
-        name = " ".join(
-            p for p in [u.get("first_name"), u.get("last_name")] if p
-        ).strip() or u.get("username") or "Без имени"
-
+        name = " ".join(p for p in [u.get("first_name"), u.get("last_name")] if p).strip() or u.get("username") or "Без имени"
         members.append(
             {
-                "id": u.get("id") or r["user_id"],            # id пользователя
+                "id": u.get("id") or r["user_id"],
                 "telegram_id": u.get("telegram_id"),
                 "username": u.get("username"),
                 "name": name,
@@ -306,8 +364,8 @@ async def _fetch_team_members(team_id: str) -> List[Dict[str, Any]]:
                 "joined_at": r.get("joined_at"),
             }
         )
-
     return members
+
 
 async def _fetch_team_with_members(team_id: str) -> Dict[str, Any]:
     team = await _ensure_team_exists(team_id)
@@ -523,66 +581,64 @@ async def create_team(request: Request) -> HTMLResponse:
     """Создание команды с уникальным кодом и назначением капитана."""
     payload = await _parse_request_payload(request, CreateTeamRequest)
     user = await _ensure_user_exists(payload.user_id)
+
+    # Если уже в команде — 409 с понятным текстом
+    existing_team = await _find_existing_team_for_user(user)
+    if existing_team:
+        team_name = existing_team.get("name") or existing_team.get("code") or existing_team.get("id")
+        message = f"Вы уже состоите в команде «{team_name}». Сначала покиньте текущую команду."
+        raise HTTPException(status.HTTP_409_CONFLICT, detail=message)
+
     code = await _generate_unique_team_code()
 
     team_payload = {
         "name": payload.team_name,
         "code": code,
-        "captain_id": user["telegram_id"],  # bigint FK
+        "captain_id": user["id"],  # ✅ правильный PK
     }
 
-    try:
-        team_response = await _supabase_request(
-            "POST",
-            "teams",
-            json_payload=team_payload,
-            prefer="return=representation",
-        )
-    except Exception as e:
-        logging.error("❌ Ошибка при запросе в Supabase: %s", e, exc_info=True)
-        raise HTTPException(status_code=502, detail="Ошибка запроса к базе")
-
-    # логируем ответ от Supabase
-    logging.debug("Supabase insert into teams -> %s", team_response)
-
-    if not team_response:
-        raise HTTPException(status_code=500, detail="Supabase вернул пустой ответ при создании команды")
-
-    if isinstance(team_response, list):
-        team_data = team_response[0] if team_response else None
-    elif isinstance(team_response, dict):
-        team_data = team_response
-    else:
-        raise HTTPException(status_code=500, detail="Неизвестный формат ответа от Supabase")
-
-    if not team_data or "id" not in team_data:
-        raise HTTPException(status_code=500, detail=f"Team created but no ID in response: {team_response}")
-
-    member = await _add_team_member(team_data["id"], user["id"], is_captain=True)
-
-    team_with_members = await _fetch_team_with_members(team_data["id"])
-    team_with_members.setdefault("code", code)
-
-    member_entry = next(
-        (m for m in team_with_members.get("members", []) if m.get("id") == user.get("id")),
-        None,
+    # 1) Вставляем команду — пробрасываем исходные ошибки Supabase
+    team_response = await _supabase_request(
+        "POST",
+        "teams",
+        json_payload=team_payload,
+        prefer="return=representation",
     )
 
-    if _is_json_request(request):
-        redirect_url = f"/team/{team_data['id']}?user_id={user['id']}"
-        return JSONResponse(
-            {"team": team_with_members, "redirect": redirect_url}
-        )
+    # team_response может быть списком или объектом
+    team_data = team_response[0] if isinstance(team_response, list) and team_response else team_response
+    if not isinstance(team_data, dict) or "id" not in team_data:
+        logging.error("Team created but no ID in response: %s", team_response)
+        raise HTTPException(status_code=500, detail=f"Team created but no ID in response")
 
+    team_id = team_data["id"]
+
+    # 2) Добавляем участника (капитана) — upsert, не падаем на дублях
+    try:
+        await _add_team_member(team_id, user["id"], is_captain=True)
+    except HTTPException as e:
+        # если это RLS/403 — отдадим понятную ошибку, но команда уже создана
+        logging.error("Failed to add captain to team_members: %s", e.detail)
+        # Можно продолжить и просто показать команду без списка участников
+        # raise  # если хочешь жёстко падать — раскомментируй
+
+    # 3) Собираем данные для отображения
+    team_with_members = await _fetch_team_with_members(team_id)
+    team_with_members.setdefault("code", code)
+
+    if _is_json_request(request):
+        # Возвращаем JSON-ответ + redirect для фронта
+        redirect_url = f"/team/{team_id}?user_id={user['id']}"
+        return JSONResponse({"team": team_with_members, "redirect": redirect_url})
+
+    # HTML-ответ (рендер страницы команды)
     context = _build_team_context(
         request,
         team=team_with_members,
         user=user,
-        member=member_entry or member,
         last_response={"team": team_with_members},
     )
     return templates.TemplateResponse("team.html", context)
-
 
 
 
