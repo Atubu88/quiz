@@ -258,6 +258,31 @@ async def _add_team_member(team_id: str, user_id: int, is_captain: bool) -> Dict
     return created[0] if isinstance(created, list) else created
 
 
+async def _find_existing_team_for_user(user: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Return the team the user already belongs to (if any)."""
+
+    # Проверяем наличие записи в таблице участников.
+    membership = await _fetch_single_record(
+        "team_members",
+        {"user_id": f"eq.{user['id']}"},
+        select="team_id",
+    )
+
+    if membership and membership.get("team_id"):
+        team = await _fetch_single_record("teams", {"id": f"eq.{membership['team_id']}"})
+        if team:
+            return team
+
+    # На случай, если запись участника отсутствует, но пользователь значится капитаном.
+    captain_team = await _fetch_single_record(
+        "teams", {"captain_id": f"eq.{user['telegram_id']}"}
+    )
+    if captain_team:
+        return captain_team
+
+    return None
+
+
 async def _fetch_team_members(team_id: str) -> List[Dict[str, Any]]:
     """Возвращает список участников команды с данными пользователя (без join в select)."""
 
@@ -523,6 +548,16 @@ async def create_team(request: Request) -> HTMLResponse:
     """Создание команды с уникальным кодом и назначением капитана."""
     payload = await _parse_request_payload(request, CreateTeamRequest)
     user = await _ensure_user_exists(payload.user_id)
+
+    existing_team = await _find_existing_team_for_user(user)
+    if existing_team:
+        team_name = existing_team.get("name") or existing_team.get("code") or existing_team.get("id")
+        message = (
+            "Вы уже состоите в команде "
+            f"«{team_name}». Сначала покиньте текущую команду, чтобы создать новую."
+        )
+        raise HTTPException(status.HTTP_409_CONFLICT, detail=message)
+
     code = await _generate_unique_team_code()
 
     team_payload = {
