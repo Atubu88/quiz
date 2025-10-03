@@ -107,27 +107,36 @@ def _validate_init_data(init_data: str) -> Dict[str, Any]:
     if not init_data:
         raise HTTPException(status_code=400, detail="initData is required")
 
-    print(f"RAW initData: {init_data}")  # ЛОГ
+    print("RAW initData:", init_data)
 
+    # Парсим query string
     parsed = {key: values[0] for key, values in parse_qs(init_data, strict_parsing=True).items()}
 
-    # забираем hash
     received_hash = parsed.pop("hash", None)
     if not received_hash:
         raise HTTPException(status_code=400, detail="hash is missing from initData")
 
-    # выбрасываем signature, оно не должно участвовать
+    # Убираем signature — оно не должно участвовать в проверке
     parsed.pop("signature", None)
 
-    # формируем строку из оставшихся
+    # Формируем data_check_string из оставшихся полей, отсортированных по ключу
     data_check_string = "\n".join(f"{k}={parsed[k]}" for k in sorted(parsed.keys()))
 
-    secret_key = hashlib.sha256(BOT_TOKEN.encode()).digest()
-    computed_hash = hmac.new(secret_key, msg=data_check_string.encode(), digestmod=hashlib.sha256).hexdigest()
+    # Точный способ: secret_key = HMAC_SHA256(key="WebAppData", message=BOT_TOKEN)
+    secret_key = hmac.new(b"WebAppData", BOT_TOKEN.encode(), hashlib.sha256).digest()
+
+    # Теперь вычисляем хэш: HMAC_SHA256(secret_key, data_check_string)
+    computed_hash = hmac.new(secret_key, data_check_string.encode(), hashlib.sha256).hexdigest()
+
+    print("BOT_TOKEN:", BOT_TOKEN)
+    print("Data check string:", data_check_string)
+    print("Computed hash:", computed_hash)
+    print("Received hash:", received_hash)
 
     if not hmac.compare_digest(computed_hash, received_hash):
         raise HTTPException(status_code=401, detail="Invalid initData hash")
 
+    # Теперь извлекаем user
     user_raw = parsed.get("user")
     if not user_raw:
         raise HTTPException(status_code=400, detail="user payload is missing")
@@ -140,7 +149,7 @@ def _validate_init_data(init_data: str) -> Dict[str, Any]:
     if "id" not in user_payload:
         raise HTTPException(status_code=400, detail="user.id is required in initData")
 
-    print(f"Validated user: {user_payload}")  # ЛОГ
+    print("Validated user:", user_payload)
 
     return {
         "auth_date": parsed.get("auth_date"),
