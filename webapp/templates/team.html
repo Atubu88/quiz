@@ -43,6 +43,43 @@
         </div>
       </div>
 
+      {% if current_member or user_is_captain %}
+        <div class="card shadow-sm mb-4">
+          <div class="card-body">
+            <h2 class="h4 mb-3">Управление командой</h2>
+
+            {% if current_member and not current_member.is_captain %}
+              <form
+                id="leave-team-form"
+                action="/team/leave"
+                method="post"
+                class="d-flex flex-column flex-sm-row align-items-start gap-2 mb-3"
+              >
+                <input type="hidden" name="team_id" value="{{ team.id }}" />
+                <input type="hidden" name="user_id" value="{{ current_user.id }}" />
+                <button type="submit" class="btn btn-outline-secondary">Выйти из команды</button>
+              </form>
+            {% endif %}
+
+            {% if user_is_captain %}
+              <form
+                id="delete-team-form"
+                action="/team/delete"
+                method="post"
+                class="d-flex flex-column flex-sm-row align-items-start gap-2"
+              >
+                <input type="hidden" name="team_id" value="{{ team.id }}" />
+                <input type="hidden" name="user_id" value="{{ current_user.id if current_user else captain_id }}" />
+                <button type="submit" class="btn btn-outline-danger">Удалить команду</button>
+              </form>
+              <p class="text-muted small mt-3 mb-0">
+                Удаление команды автоматически исключит всех участников и очистит результаты игры.
+              </p>
+            {% endif %}
+          </div>
+        </div>
+      {% endif %}
+
       {% if user_is_captain %}
         <div class="card shadow-sm mb-4">
           <div class="card-body">
@@ -75,8 +112,37 @@
 
 {% block scripts %}
   {{ super() }}
-  {% if user_is_captain %}
-    <script>
+  <script>
+    (function () {
+      const handleJsonResponse = async (response) => {
+        let data = null;
+        try {
+          data = await response.json();
+        } catch (_) {}
+
+        if (!response.ok || !data) {
+          const detail = data && data.detail;
+          const message =
+            (typeof detail === "string" && detail) ||
+            (detail && detail.error) ||
+            (detail && detail.message) ||
+            response.statusText ||
+            "Неизвестная ошибка";
+          throw new Error(message);
+        }
+
+        return data;
+      };
+
+      const toJsonPayload = (form) => {
+        const formData = new FormData(form);
+        const payload = {};
+        formData.forEach((value, key) => {
+          payload[key] = value;
+        });
+        return payload;
+      };
+
       const startGameForm = document.getElementById("start-game-form");
       const responseContainer = document.getElementById("start-game-response");
 
@@ -85,11 +151,7 @@
           event.preventDefault();
           responseContainer.textContent = "Отправка запроса…";
 
-          const formData = new FormData(startGameForm);
-          const payload = {};
-          formData.forEach((value, key) => {
-            payload[key] = value;
-          });
+          const payload = toJsonPayload(startGameForm);
 
           try {
             const fetchResponse = await fetch(startGameForm.action, {
@@ -100,13 +162,69 @@
               body: JSON.stringify(payload),
             });
 
-            const data = await fetchResponse.json();
+            const data = await handleJsonResponse(fetchResponse);
             responseContainer.textContent = JSON.stringify(data, null, 2);
           } catch (error) {
-            responseContainer.textContent = `Ошибка: ${error}`;
+            responseContainer.textContent = `Ошибка: ${error.message || error}`;
           }
         });
       }
-    </script>
-  {% endif %}
+
+      const leaveTeamForm = document.getElementById("leave-team-form");
+      if (leaveTeamForm) {
+        leaveTeamForm.addEventListener("submit", async (event) => {
+          event.preventDefault();
+          if (!confirm("Вы уверены, что хотите покинуть команду?")) {
+            return;
+          }
+
+          const payload = toJsonPayload(leaveTeamForm);
+
+          try {
+            const response = await fetch(leaveTeamForm.action, {
+              method: leaveTeamForm.method.toUpperCase(),
+              headers: {
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify(payload),
+            });
+
+            const data = await handleJsonResponse(response);
+            alert(data.message || "Вы покинули команду.");
+            window.location.href = data.redirect || "/";
+          } catch (error) {
+            alert("Не удалось выйти из команды: " + (error.message || error));
+          }
+        });
+      }
+
+      const deleteTeamForm = document.getElementById("delete-team-form");
+      if (deleteTeamForm) {
+        deleteTeamForm.addEventListener("submit", async (event) => {
+          event.preventDefault();
+          if (!confirm("Удалить команду без возможности восстановления?")) {
+            return;
+          }
+
+          const payload = toJsonPayload(deleteTeamForm);
+
+          try {
+            const response = await fetch(deleteTeamForm.action, {
+              method: deleteTeamForm.method.toUpperCase(),
+              headers: {
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify(payload),
+            });
+
+            const data = await handleJsonResponse(response);
+            alert(data.message || "Команда удалена.");
+            window.location.href = data.redirect || "/";
+          } catch (error) {
+            alert("Не удалось удалить команду: " + (error.message || error));
+          }
+        });
+      }
+    })();
+  </script>
 {% endblock %}

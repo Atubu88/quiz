@@ -19,7 +19,7 @@ from urllib.parse import parse_qs
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request, status
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
@@ -63,6 +63,16 @@ class JoinTeamRequest(BaseModel):
 
 
 class StartTeamRequest(BaseModel):
+    user_id: int
+    team_id: str
+
+
+class LeaveTeamRequest(BaseModel):
+    user_id: int
+    team_id: str
+
+
+class DeleteTeamRequest(BaseModel):
     user_id: int
     team_id: str
 
@@ -300,6 +310,19 @@ async def _add_team_member(team_id: str, user_id: int, is_captain: bool = False)
     return response[0] if isinstance(response, list) else response
 
 
+async def _remove_team_member(team_id: str, user_id: int) -> None:
+    await _supabase_request(
+        "DELETE",
+        "team_members",
+        params={"team_id": f"eq.{team_id}", "user_id": f"eq.{user_id}"},
+    )
+
+
+async def _delete_team(team_id: str) -> None:
+    await _supabase_request("DELETE", "team_members", params={"team_id": f"eq.{team_id}"})
+    await _supabase_request("DELETE", "teams", params={"id": f"eq.{team_id}"})
+
+
 
 async def _find_existing_team_for_user(user: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Return the team the user already belongs to (if any)."""
@@ -478,8 +501,6 @@ def _build_team_context(
     captain_form_user_id: Optional[int] = None
 
     if user:
-        # Ensure the current user is present in the rendered list so that the template
-        # always shows at least one participant.
         members_keys = {
             (m.get("username"), m.get("name")) for m in members if isinstance(m, dict)
         }
@@ -492,10 +513,10 @@ def _build_team_context(
         inferred_is_captain = bool(
             member.get("is_captain")
             if member is not None
-            else team.get("captain_id") == user.get("telegram_id")
+            else team.get("captain_id") == user.get("id")
         )
 
-        if user_key not in members_keys:
+        if member is not None and user_key not in members_keys:
             members.append(
                 _build_member_representation(
                     {
@@ -515,6 +536,8 @@ def _build_team_context(
         "user_is_captain": inferred_is_captain,
         "captain_id": captain_form_user_id,
         "last_response": last_response,
+        "current_user": user,
+        "current_member": member,
     }
     return context
 
@@ -724,6 +747,50 @@ async def start_team(request: Request) -> HTMLResponse:
         "last_response": {"team": team, "quiz": quiz_payload},
     }
     return templates.TemplateResponse("quiz.html", context)
+
+
+@app.post("/team/leave", response_class=HTMLResponse)
+async def leave_team(request: Request) -> HTMLResponse:
+    payload = await _parse_request_payload(request, LeaveTeamRequest)
+    user = await _ensure_user_exists(payload.user_id)
+    team = await _ensure_team_exists(payload.team_id)
+
+    member = await _fetch_team_member(team["id"], user["id"])
+    if not member:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Вы не состоите в этой команде")
+    if member.get("is_captain"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Капитан не может покинуть команду. Используйте удаление команды.",
+        )
+
+    await _remove_team_member(team["id"], user["id"])
+    team_with_members = await _fetch_team_with_members(team["id"])
+    message = "Вы покинули команду."
+
+    if _is_json_request(request):
+        return JSONResponse({"team": team_with_members, "redirect": "/", "message": message})
+
+    return RedirectResponse(url="/", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@app.post("/team/delete", response_class=HTMLResponse)
+async def delete_team(request: Request) -> HTMLResponse:
+    payload = await _parse_request_payload(request, DeleteTeamRequest)
+    user = await _ensure_user_exists(payload.user_id)
+    team = await _ensure_team_exists(payload.team_id)
+
+    if team.get("captain_id") != user.get("id"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Удалять команду может только капитан")
+
+    await _delete_team(team["id"])
+    QUIZ_CACHE.pop(team["id"], None)
+    message = "Команда удалена."
+
+    if _is_json_request(request):
+        return JSONResponse({"redirect": "/", "message": message})
+
+    return RedirectResponse(url="/", status_code=status.HTTP_303_SEE_OTHER)
 
 
 @app.get("/me")
