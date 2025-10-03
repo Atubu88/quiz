@@ -2,6 +2,7 @@
 from __future__ import annotations
 from dotenv import load_dotenv
 load_dotenv()
+
 import hashlib
 import hmac
 import json
@@ -24,13 +25,13 @@ BASE_DIR = Path(__file__).resolve().parent
 TEMPLATES_DIR = BASE_DIR / "templates"
 STATIC_DIR = BASE_DIR / "static"
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
+# ВАЖНО: убираем кавычки/пробелы у токена
+BOT_TOKEN = (os.getenv("BOT_TOKEN") or "").strip()
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_API_KEY = os.getenv("SUPABASE_API_KEY")
 
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN environment variable is required for Telegram init data validation.")
-
 if not SUPABASE_URL or not SUPABASE_API_KEY:
     raise RuntimeError("SUPABASE_URL and SUPABASE_API_KEY must be configured.")
 
@@ -39,7 +40,6 @@ QUIZ_CACHE: dict[str, dict[str, Any]] = {}
 app = FastAPI(title="Quiz Mini App")
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
-
 templates = Jinja2Templates(directory=TEMPLATES_DIR)
 
 
@@ -78,9 +78,14 @@ def _build_supabase_headers(prefer: Optional[str] = None) -> Dict[str, str]:
     return headers
 
 
-async def _supabase_request(method: str, path: str, *, params: Optional[Dict[str, Any]] = None,
-                            json_payload: Optional[Dict[str, Any] | List[Dict[str, Any]]] = None,
-                            prefer: Optional[str] = None) -> Any:
+async def _supabase_request(
+    method: str,
+    path: str,
+    *,
+    params: Optional[Dict[str, Any]] = None,
+    json_payload: Optional[Dict[str, Any] | List[Dict[str, Any]]] = None,
+    prefer: Optional[str] = None
+) -> Any:
     url = f"{SUPABASE_URL}/rest/v1/{path}"
     headers = _build_supabase_headers(prefer)
     async with httpx.AsyncClient(timeout=15) as client:
@@ -90,8 +95,10 @@ async def _supabase_request(method: str, path: str, *, params: Optional[Dict[str
             detail = response.json()
         except ValueError:
             detail = {"message": response.text}
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY,
-                            detail={"error": "SupabaseError", "status": response.status_code, "detail": detail})
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail={"error": "SupabaseError", "status": response.status_code, "detail": detail},
+        )
     if response.status_code == status.HTTP_204_NO_CONTENT:
         return None
     return response.json()
@@ -103,40 +110,80 @@ async def _fetch_single_record(table: str, filters: Dict[str, str], select: str 
     return data[0] if data else None
 
 
+def _calc_hmacs(token: str, data_check_string: str) -> Dict[str, str]:
+    """Возвращает все варианты подписи: webapp/login."""
+    # WebAppData-деривированный ключ
+    secret_webapp = hmac.new(b"WebAppData", token.encode("utf-8"), hashlib.sha256).digest()
+    hash_webapp = hmac.new(secret_webapp, data_check_string.encode("utf-8"), hashlib.sha256).hexdigest()
+
+    # Login Widget-совместимость
+    secret_login = hashlib.sha256(token.encode("utf-8")).digest()
+    hash_login = hmac.new(secret_login, data_check_string.encode("utf-8"), hashlib.sha256).hexdigest()
+
+    return {"webapp": hash_webapp, "login": hash_login}
+
+
 def _validate_init_data(init_data: str) -> Dict[str, Any]:
     if not init_data:
         raise HTTPException(status_code=400, detail="initData is required")
 
+    token = (os.getenv("BOT_TOKEN") or "").strip()
+    if not token:
+        raise HTTPException(status_code=500, detail="BOT_TOKEN is not set")
+
     print("RAW initData:", init_data)
 
-    # Парсим query string
-    parsed = {key: values[0] for key, values in parse_qs(init_data, strict_parsing=True).items()}
+    # Разбор query
+    parsed = {k: v[0] for k, v in parse_qs(init_data, strict_parsing=True).items()}
 
     received_hash = parsed.pop("hash", None)
     if not received_hash:
         raise HTTPException(status_code=400, detail="hash is missing from initData")
 
-    # Убираем signature — оно не должно участвовать в проверке
-    parsed.pop("signature", None)
-
-    # Формируем data_check_string из оставшихся полей, отсортированных по ключу
+    # Сценарий 1: считаем ХЭШ по всем ключам (включая signature, если есть)
     data_check_string = "\n".join(f"{k}={parsed[k]}" for k in sorted(parsed.keys()))
-
-    # Точный способ: secret_key = HMAC_SHA256(key="WebAppData", message=BOT_TOKEN)
-    secret_key = hmac.new(b"WebAppData", BOT_TOKEN.encode(), hashlib.sha256).digest()
-
-    # Теперь вычисляем хэш: HMAC_SHA256(secret_key, data_check_string)
-    computed_hash = hmac.new(secret_key, data_check_string.encode(), hashlib.sha256).hexdigest()
-
-    print("BOT_TOKEN:", BOT_TOKEN)
     print("Data check string:", data_check_string)
-    print("Computed hash:", computed_hash)
+    h1 = _calc_hmacs(token, data_check_string)
+
+    # Сценарий 2 (legacy): на некоторых клиентах signature исторически не участвовал
+    parsed_legacy = dict(parsed)
+    if "signature" in parsed_legacy:
+        parsed_legacy.pop("signature")
+    data_check_string_legacy = "\n".join(f"{k}={parsed_legacy[k]}" for k in sorted(parsed_legacy.keys()))
+    h2 = _calc_hmacs(token, data_check_string_legacy)
+
+    print("Computed hash (webapp):", h1["webapp"])
+    print("Computed hash (login):", h1["login"])
+    print("Computed hash legacy (webapp):", h2["webapp"])
+    print("Computed hash legacy (login):", h2["login"])
     print("Received hash:", received_hash)
 
-    if not hmac.compare_digest(computed_hash, received_hash):
-        raise HTTPException(status_code=401, detail="Invalid initData hash")
+    if received_hash not in {h1["webapp"], h1["login"], h2["webapp"], h2["login"]}:
+        # Быстрая диагностика: какой бот у токена?
+        try:
+            r = httpx.get(f"https://api.telegram.org/bot{token}/getMe", timeout=5)
+            bot_info = r.json()
+        except Exception as e:
+            bot_info = {"error": str(e)}
+        print("getMe:", bot_info)
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid initData hash (ensure WebApp opened by the same bot whose token is used on server)",
+        )
 
-    # Теперь извлекаем user
+    # (Опционально) Проверка свежести initData
+    try:
+        auth_ts = int(parsed.get("auth_date", "0"))
+        # 24 часа допуска
+        if abs(datetime.now(timezone.utc).timestamp() - auth_ts) > 86400:
+            # Не критично: можно сделать warning вместо жёсткого отказа
+            print("Warning: initData auth_date is older than 24h (or too far in future).")
+            # Если хочешь строго — раскомментируй следующую строку:
+            # raise HTTPException(status_code=401, detail="initData is too old")
+    except ValueError:
+        pass
+
+    # Разбор user
     user_raw = parsed.get("user")
     if not user_raw:
         raise HTTPException(status_code=400, detail="user payload is missing")
@@ -234,6 +281,17 @@ async def _load_quiz_into_cache(team_id: str) -> Dict[str, Any]:
 
 # ------------------- ЭНДПОИНТЫ -------------------
 
+@app.on_event("startup")
+async def startup_check():
+    # Быстрый самотест токена бота
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            r = await client.get(f"https://api.telegram.org/bot{BOT_TOKEN}/getMe")
+        print("Startup getMe:", r.text)
+    except Exception as e:
+        print("Startup getMe error:", repr(e))
+
+
 @app.get("/", response_class=HTMLResponse)
 async def read_root(request: Request) -> HTMLResponse:
     return templates.TemplateResponse("index.html", {"request": request})
@@ -241,7 +299,7 @@ async def read_root(request: Request) -> HTMLResponse:
 
 @app.get("/debug/init")
 async def debug_init(initData: str) -> Dict[str, Any]:
-    """Отладка initData напрямую"""
+    """Отладка initData напрямую."""
     parsed = _validate_init_data(initData)
     return {"parsed": parsed}
 
@@ -261,19 +319,16 @@ async def login(payload: LoginRequest) -> Dict[str, Any]:
         "redirect": "/",
     }
 
-# --- /team/create, /team/join, /team/start, /quiz/{team_id}, /me остаются как в твоем коде ---
-
 
 @app.post("/team/create")
 async def create_team(payload: CreateTeamRequest) -> Dict[str, Any]:
     """Create a team with a unique code and assign the captain."""
-
     user = await _ensure_user_exists(payload.user_id)
     code = await _generate_unique_team_code()
     team_payload = {
         "name": payload.team_name,
         "code": code,
-        "captain_id": user["telegram_id"],
+        "captain_id": user["telegram_id"],  # если у тебя captian_id = users.telegram_id
     }
     team_response = await _supabase_request(
         "POST",
@@ -289,7 +344,6 @@ async def create_team(payload: CreateTeamRequest) -> Dict[str, Any]:
 @app.post("/team/join")
 async def join_team(payload: JoinTeamRequest) -> Dict[str, Any]:
     """Join an existing team using an invite code."""
-
     user = await _ensure_user_exists(payload.user_id)
     team = await _fetch_single_record("teams", {"code": f"eq.{payload.code.upper()}"})
     if not team:
@@ -305,7 +359,6 @@ async def join_team(payload: JoinTeamRequest) -> Dict[str, Any]:
 @app.post("/team/start")
 async def start_team(payload: StartTeamRequest) -> Dict[str, Any]:
     """Mark the team as started and load quiz data into cache for fast access."""
-
     user = await _ensure_user_exists(payload.user_id)
     team = await _ensure_team_exists(payload.team_id)
 
