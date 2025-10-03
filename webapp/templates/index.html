@@ -3,53 +3,12 @@
 {% block title %}Главная · Командная Викторина{% endblock %}
 
 {% block content %}
-  <div class="row justify-content-center">
-    <div class="col-lg-8">
-      <div class="text-center mb-5">
-        <h1 class="display-5 fw-bold">Добро пожаловать в командную Викторину!</h1>
-      </div>
+  <div class="text-center mt-5">
+    <h1 class="display-5 fw-bold mb-4">Добро пожаловать в Командную Викторину 🎉</h1>
 
-      <div class="card shadow-sm mb-4">
-        <div class="card-body">
-          <h2 class="h4 mb-3">Создать команду</h2>
-          <form id="create-team-form" action="/team/create" method="post" novalidate>
-            <div class="mb-3">
-              <label for="team-name" class="form-label">Название команды</label>
-              <input type="text" class="form-control" id="team-name" name="team_name" placeholder="Например, Мозговой штурм" required />
-            </div>
-            <div class="mb-3">
-              <label for="create-user" class="form-label">ID пользователя</label>
-              <input type="number" class="form-control" id="create-user" name="user_id" placeholder="Введите ID" required />
-            </div>
-            <button type="submit" class="btn btn-success">Создать команду</button>
-          </form>
-          <div class="mt-3">
-            <h3 class="h6 text-muted">Ответ сервера</h3>
-            <pre class="bg-dark text-white p-3 rounded" id="create-team-response">Ожидание запроса…</pre>
-          </div>
-        </div>
-      </div>
-
-      <div class="card shadow-sm">
-        <div class="card-body">
-          <h2 class="h4 mb-3">Присоединиться к команде</h2>
-          <form id="join-team-form" action="/team/join" method="post" novalidate>
-            <div class="mb-3">
-              <label for="join-user" class="form-label">ID пользователя</label>
-              <input type="number" class="form-control" id="join-user" name="user_id" placeholder="Введите ID" required />
-            </div>
-            <div class="mb-3">
-              <label for="join-code" class="form-label">Код команды</label>
-              <input type="text" class="form-control" id="join-code" name="code" placeholder="Введите код" required />
-            </div>
-            <button type="submit" class="btn btn-primary">Присоединиться</button>
-          </form>
-          <div class="mt-3">
-            <h3 class="h6 text-muted">Ответ сервера</h3>
-            <pre class="bg-dark text-white p-3 rounded" id="join-team-response">Ожидание запроса…</pre>
-          </div>
-        </div>
-      </div>
+    <div class="d-grid gap-3 col-6 mx-auto">
+      <button id="btn-create" class="btn btn-success btn-lg">Создать команду</button>
+      <button id="btn-join" class="btn btn-primary btn-lg">Присоединиться к команде</button>
     </div>
   </div>
 {% endblock %}
@@ -61,7 +20,9 @@
     const tg = window.Telegram.WebApp;
     tg.ready();
 
-    // сразу логиним пользователя при входе
+    // авторизация сразу при загрузке
+    let currentUser = null;
+
     if (tg.initData) {
       fetch("/login", {
         method: "POST",
@@ -70,52 +31,41 @@
       })
       .then(r => r.json())
       .then(data => {
-        console.log("Login response:", data);
-        const header = document.querySelector("h1.display-5");
-        if (data.user && data.user.first_name) {
-          header.textContent = `Привет, ${data.user.first_name}! Добро пожаловать в Викторину 🎉`;
-        }
+        console.log("Login OK:", data);
+        currentUser = data.user;
       })
       .catch(err => console.error("Login error:", err));
-    } else {
-      console.warn("Нет tg.initData — проверяй запуск из Telegram Mini App");
     }
 
-    // --- формы создания и присоединения ---
-    const handleFormSubmit = (formId, responseId) => {
-      const form = document.getElementById(formId);
-      const responseContainer = document.getElementById(responseId);
+    // обработка кнопок
+    document.getElementById("btn-create").onclick = () => {
+      if (!currentUser) return alert("Ошибка: не удалось определить пользователя");
+      const teamName = prompt("Введите название команды:");
+      if (!teamName) return;
 
-      if (!form || !responseContainer) return;
-
-      form.addEventListener("submit", async (event) => {
-        event.preventDefault();
-        responseContainer.textContent = "Отправка запроса…";
-
-        const formData = new FormData(form);
-        const payload = {};
-        formData.forEach((value, key) => {
-          payload[key] = value;
-        });
-
-        try {
-          const fetchResponse = await fetch(form.action, {
-            method: form.method.toUpperCase(),
-            headers: {
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify(payload),
-          });
-
-          const data = await fetchResponse.json();
-          responseContainer.textContent = JSON.stringify(data, null, 2);
-        } catch (error) {
-          responseContainer.textContent = `Ошибка: ${error}`;
-        }
-      });
+      fetch("/team/create", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ user_id: currentUser.id, team_name: teamName })
+      })
+      .then(r => r.json())
+      .then(data => window.location.href = `/team/${data.team.id}`)
+      .catch(err => alert("Ошибка создания команды: " + err));
     };
 
-    handleFormSubmit("create-team-form", "create-team-response");
-    handleFormSubmit("join-team-form", "join-team-response");
+    document.getElementById("btn-join").onclick = () => {
+      if (!currentUser) return alert("Ошибка: не удалось определить пользователя");
+      const code = prompt("Введите код команды:");
+      if (!code) return;
+
+      fetch("/team/join", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ user_id: currentUser.id, code })
+      })
+      .then(r => r.json())
+      .then(data => window.location.href = `/team/${data.team.id}`)
+      .catch(err => alert("Ошибка присоединения: " + err));
+    };
   </script>
 {% endblock %}
