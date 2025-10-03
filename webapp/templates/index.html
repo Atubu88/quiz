@@ -8,7 +8,9 @@
 
     <div class="d-grid gap-3 col-6 mx-auto">
       <button id="btn-create" class="btn btn-success btn-lg">Создать команду</button>
-      <button id="btn-join" class="btn btn-primary btn-lg">Присоединиться к команде</button>
+      <button id="btn-join" class="btn btn-primary btn-lg">Зарегистрироваться в команде</button>
+      <!-- 🔴 по умолчанию скрыта -->
+      <a id="btn-myteam" href="#" class="btn btn-info btn-lg" style="display:none;">Моя команда</a>
     </div>
   </div>
 {% endblock %}
@@ -20,9 +22,14 @@
     const tg = window.Telegram.WebApp;
     tg.ready();
 
-    // авторизация сразу при загрузке
     let currentUser = null;
+    let currentTeam = null;
 
+    const btnCreate = document.getElementById("btn-create");
+    const btnJoin = document.getElementById("btn-join");
+    const myTeamBtn = document.getElementById("btn-myteam");
+
+    // ===== Авторизация =====
     if (tg.initData) {
       fetch("/login", {
         method: "POST",
@@ -30,22 +37,34 @@
         body: JSON.stringify({ initData: tg.initData })
       })
       .then(r => r.json())
-      .then(data => {
-        console.log("Login OK:", data);
+      .then(async data => {
         currentUser = data.user;
+
+        // Проверим, есть ли команда
+        try {
+          const resp = await fetch(`/team/of-user/${currentUser.id}`);
+          if (resp.ok) {
+            const team = await resp.json();
+            if (team && team.id) {
+              currentTeam = team;
+              myTeamBtn.href = `/team/${team.id}?user_id=${currentUser.id}`;
+              myTeamBtn.style.display = "block"; // показываем кнопку
+            } else {
+              myTeamBtn.style.display = "none"; // скрыта, если команды нет
+            }
+          }
+        } catch (err) {
+          console.warn("Не удалось проверить команду:", err);
+          myTeamBtn.style.display = "none";
+        }
       })
       .catch(err => console.error("Login error:", err));
     }
 
-    // обработка кнопок
+    // ===== Универсальный обработчик =====
     const handleJsonResponse = async (response) => {
       let data = null;
-      try {
-        data = await response.json();
-      } catch (_) {
-        // ignore parsing error, will be handled below
-      }
-
+      try { data = await response.json(); } catch (_) {}
       if (!response.ok || !data) {
         const detail = data && data.detail;
         const message =
@@ -56,7 +75,6 @@
           "Неизвестная ошибка";
         throw new Error(message);
       }
-
       return data;
     };
 
@@ -65,20 +83,20 @@
         payload.redirect ||
         (payload.team && payload.team.id ? `/team/${payload.team.id}` : null);
 
-      if (!redirectPath) {
-        throw new Error("Некорректный ответ сервера");
-      }
+      if (!redirectPath) throw new Error("Некорректный ответ сервера");
 
       const url = new URL(redirectPath, window.location.origin);
       if (currentUser && currentUser.id && !url.searchParams.has("user_id")) {
         url.searchParams.set("user_id", currentUser.id);
       }
-
       window.location.href = url.toString();
     };
 
-    document.getElementById("btn-create").onclick = () => {
+    // ===== Создать команду =====
+    btnCreate.onclick = () => {
       if (!currentUser) return alert("Ошибка: не удалось определить пользователя");
+      if (currentTeam) return alert("У тебя уже есть команда. Сначала выйди из неё или войди в свою.");
+
       const teamName = prompt("Введите название команды:");
       if (!teamName) return;
 
@@ -92,8 +110,11 @@
       .catch(err => alert("Ошибка создания команды: " + err.message));
     };
 
-    document.getElementById("btn-join").onclick = () => {
+    // ===== Зарегистрироваться в команде =====
+    btnJoin.onclick = () => {
       if (!currentUser) return alert("Ошибка: не удалось определить пользователя");
+      if (currentTeam) return alert("У тебя уже есть команда. Сначала выйди из неё или войди в свою.");
+
       const code = prompt("Введите код команды:");
       if (!code) return;
 
