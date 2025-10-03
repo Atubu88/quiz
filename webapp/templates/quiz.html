@@ -5,8 +5,23 @@
 {% block content %}
   {% set question = question or {} %}
   {% set options = question.options or answers or [] %}
+  {% set team = team or {} %}
+  {% set user = user or {} %}
   <div class="row justify-content-center">
     <div class="col-lg-8">
+      <div class="text-center mb-4">
+        <h1 class="h3 fw-bold mb-2">Игра для команды «{{ team.name or 'Без названия' }}»</h1>
+        {% if user.display_name %}
+          <p class="text-muted mb-0">Игрок: {{ user.display_name }}</p>
+        {% endif %}
+      </div>
+
+      {% if status_message %}
+        <div class="alert alert-success" role="alert">
+          {{ status_message }}
+        </div>
+      {% endif %}
+
       <div class="card shadow-sm mb-4">
         <div class="card-body">
           <h1 class="h3 mb-3">Текущий вопрос</h1>

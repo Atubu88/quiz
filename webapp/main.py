@@ -6,6 +6,7 @@ load_dotenv()
 import hashlib
 import hmac
 import json
+from json import JSONDecodeError
 import os
 import secrets
 import string
@@ -62,6 +63,22 @@ class JoinTeamRequest(BaseModel):
 class StartTeamRequest(BaseModel):
     user_id: int
     team_id: str
+
+
+# ------------------- СЕРИАЛИЗАЦИЯ -------------------
+
+def _serialize_user(user_record: Dict[str, Any]) -> Dict[str, Any]:
+    full_name_parts = [user_record.get("first_name"), user_record.get("last_name")]
+    full_name = " ".join(part for part in full_name_parts if part).strip()
+    display_name = full_name or user_record.get("username") or f"Игрок #{user_record['id']}"
+    return {
+        "id": user_record["id"],
+        "telegram_id": user_record.get("telegram_id"),
+        "username": user_record.get("username"),
+        "first_name": user_record.get("first_name"),
+        "last_name": user_record.get("last_name"),
+        "display_name": display_name,
+    }
 
 
 # ------------------- ВСПОМОГАТЕЛЬНЫЕ -------------------
@@ -190,7 +207,7 @@ def _validate_init_data(init_data: str) -> Dict[str, Any]:
 
     try:
         user_payload = json.loads(user_raw)
-    except json.JSONDecodeError:
+    except JSONDecodeError:
         raise HTTPException(status_code=400, detail="Invalid user JSON in initData")
 
     if "id" not in user_payload:
@@ -255,6 +272,37 @@ async def _add_team_member(team_id: str, user_id: int, is_captain: bool) -> Dict
     return created[0] if isinstance(created, list) else created
 
 
+async def _fetch_team_members_with_profiles(team_id: str) -> List[Dict[str, Any]]:
+    members_raw = await _supabase_request(
+        "GET",
+        "team_members",
+        params={"team_id": f"eq.{team_id}"},
+    ) or []
+
+    members: List[Dict[str, Any]] = []
+    for member in members_raw:
+        user = await _fetch_single_record("users", {"id": f"eq.{member['user_id']}"})
+        full_name_parts = []
+        if user:
+            if user.get("first_name"):
+                full_name_parts.append(user.get("first_name"))
+            if user.get("last_name"):
+                full_name_parts.append(user.get("last_name"))
+        full_name = " ".join(full_name_parts).strip()
+
+        members.append(
+            {
+                "id": member.get("id"),
+                "user_id": member.get("user_id"),
+                "is_captain": member.get("is_captain", False),
+                "username": user.get("username") if user else None,
+                "name": full_name or (user.get("username") if user else None),
+            }
+        )
+
+    return members
+
+
 async def _fetch_active_quiz() -> Dict[str, Any]:
     quiz = await _fetch_single_record("quizzes", {"is_active": "eq.true"}, select="id,title,description")
     if not quiz:
@@ -277,6 +325,54 @@ async def _load_quiz_into_cache(team_id: str) -> Dict[str, Any]:
     quiz_payload = await _fetch_active_quiz()
     QUIZ_CACHE[team_id] = quiz_payload
     return quiz_payload
+
+
+# ------------------- ПАРСИНГ -------------------
+
+async def _extract_payload(request: Request) -> Dict[str, Any]:
+    content_type = request.headers.get("content-type", "")
+    if "application/json" in content_type:
+        try:
+            return await request.json()
+        except JSONDecodeError as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid JSON payload: {exc}") from exc
+    form = await request.form()
+    return dict(form)
+
+
+async def _parse_model(request: Request, model: type[BaseModel]) -> BaseModel:
+    raw_payload = await _extract_payload(request)
+    normalized_payload: Dict[str, Any] = {}
+    for key, value in raw_payload.items():
+        normalized_key = "initData" if key == "init_data" else key
+        normalized_payload[normalized_key] = value
+    validator = getattr(model, "model_validate", None)
+    if callable(validator):
+        return validator(normalized_payload)
+    return model.parse_obj(normalized_payload)
+
+
+async def _build_team_template_context(
+    team: Dict[str, Any],
+    *,
+    current_user_id: int,
+    status_message: Optional[str] = None,
+) -> Dict[str, Any]:
+    members = await _fetch_team_members_with_profiles(team["id"])
+    captain_member = next((member for member in members if member.get("is_captain")), None)
+    user_is_captain = any(
+        member.get("user_id") == current_user_id and member.get("is_captain") for member in members
+    )
+
+    team_payload = dict(team)
+    team_payload["members"] = members
+
+    return {
+        "team": team_payload,
+        "user_is_captain": user_is_captain,
+        "captain_id": captain_member.get("user_id") if captain_member else current_user_id,
+        "status_message": status_message,
+    }
 
 
 # ------------------- ЭНДПОИНТЫ -------------------
@@ -304,25 +400,26 @@ async def debug_init(initData: str) -> Dict[str, Any]:
     return {"parsed": parsed}
 
 
-@app.post("/login")
-async def login(payload: LoginRequest) -> Dict[str, Any]:
+@app.post("/login", response_class=HTMLResponse)
+async def login(request: Request) -> HTMLResponse:
+    payload = await _parse_model(request, LoginRequest)
     init_payload = _validate_init_data(payload.init_data)
     user_record = await _get_or_create_user(init_payload["user"])
-    return {
-        "user": {
-            "id": user_record["id"],
-            "telegram_id": user_record["telegram_id"],
-            "username": user_record.get("username"),
-            "first_name": user_record.get("first_name"),
-            "last_name": user_record.get("last_name"),
-        },
-        "redirect": "/",
+    user_serialized = _serialize_user(user_record)
+
+    context = {
+        "request": request,
+        "user": user_serialized,
+        "prefill_user_id": user_serialized["id"],
+        "status_message": "Вы успешно вошли в систему!",
     }
+    return templates.TemplateResponse("index.html", context)
 
 
-@app.post("/team/create")
-async def create_team(payload: CreateTeamRequest) -> Dict[str, Any]:
+@app.post("/team/create", response_class=HTMLResponse)
+async def create_team(request: Request) -> HTMLResponse:
     """Create a team with a unique code and assign the captain."""
+    payload = await _parse_model(request, CreateTeamRequest)
     user = await _ensure_user_exists(payload.user_id)
     code = await _generate_unique_team_code()
     team_payload = {
@@ -338,12 +435,24 @@ async def create_team(payload: CreateTeamRequest) -> Dict[str, Any]:
     )
     team_data = team_response[0] if isinstance(team_response, list) else team_response
     await _add_team_member(team_data["id"], user["id"], is_captain=True)
-    return {"team": team_data, "code": code, "redirect": f"/team/{team_data['id']}"}
+    context = await _build_team_template_context(
+        team_data,
+        current_user_id=user["id"],
+        status_message="Команда успешно создана! Поделитесь кодом с участниками.",
+    )
+    context.update(
+        {
+            "request": request,
+            "user": _serialize_user(user),
+        }
+    )
+    return templates.TemplateResponse("team.html", context)
 
 
-@app.post("/team/join")
-async def join_team(payload: JoinTeamRequest) -> Dict[str, Any]:
+@app.post("/team/join", response_class=HTMLResponse)
+async def join_team(request: Request) -> HTMLResponse:
     """Join an existing team using an invite code."""
+    payload = await _parse_model(request, JoinTeamRequest)
     user = await _ensure_user_exists(payload.user_id)
     team = await _fetch_single_record("teams", {"code": f"eq.{payload.code.upper()}"})
     if not team:
@@ -353,12 +462,25 @@ async def join_team(payload: JoinTeamRequest) -> Dict[str, Any]:
     if not existing_member:
         existing_member = await _add_team_member(team["id"], user["id"], is_captain=False)
 
-    return {"team": team, "member": existing_member, "redirect": f"/team/{team['id']}"}
+    context = await _build_team_template_context(
+        team,
+        current_user_id=user["id"],
+        status_message="Вы присоединились к команде!",
+    )
+    context.update(
+        {
+            "request": request,
+            "user": _serialize_user(user),
+            "last_response": {"member": existing_member},
+        }
+    )
+    return templates.TemplateResponse("team.html", context)
 
 
-@app.post("/team/start")
-async def start_team(payload: StartTeamRequest) -> Dict[str, Any]:
+@app.post("/team/start", response_class=HTMLResponse)
+async def start_team(request: Request) -> HTMLResponse:
     """Mark the team as started and load quiz data into cache for fast access."""
+    payload = await _parse_model(request, StartTeamRequest)
     user = await _ensure_user_exists(payload.user_id)
     team = await _ensure_team_exists(payload.team_id)
 
@@ -368,7 +490,18 @@ async def start_team(payload: StartTeamRequest) -> Dict[str, Any]:
 
     if team.get("start_time"):
         quiz_payload = QUIZ_CACHE.get(team["id"]) or await _load_quiz_into_cache(team["id"])
-        return {"team": team, "quiz": quiz_payload, "redirect": f"/quiz/{team['id']}"}
+        first_question = (quiz_payload.get("questions") or [None])[0] if quiz_payload else None
+        context = {
+            "request": request,
+            "team": team,
+            "quiz": quiz_payload,
+            "question": first_question,
+            "answers": (first_question or {}).get("options") if first_question else None,
+            "game_id": team["id"],
+            "user": _serialize_user(user),
+            "status_message": "Игра уже была начата ранее — продолжаем!",
+        }
+        return templates.TemplateResponse("quiz.html", context)
 
     start_time = datetime.now(timezone.utc).isoformat()
     updated_team = await _supabase_request(
@@ -381,7 +514,18 @@ async def start_team(payload: StartTeamRequest) -> Dict[str, Any]:
     if isinstance(updated_team, list):
         updated_team = updated_team[0]
     quiz_payload = await _load_quiz_into_cache(team["id"])
-    return {"team": updated_team, "quiz": quiz_payload, "redirect": f"/quiz/{team['id']}"}
+    first_question = (quiz_payload.get("questions") or [None])[0] if quiz_payload else None
+    context = {
+        "request": request,
+        "team": updated_team,
+        "quiz": quiz_payload,
+        "question": first_question,
+        "answers": (first_question or {}).get("options") if first_question else None,
+        "game_id": team["id"],
+        "user": _serialize_user(user),
+        "status_message": "Командная игра началась! Удачи!",
+    }
+    return templates.TemplateResponse("quiz.html", context)
 
 
 @app.get("/me")

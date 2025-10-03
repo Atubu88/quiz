@@ -3,55 +3,74 @@
 {% block title %}Главная · Командная Викторина{% endblock %}
 
 {% block content %}
+  {% set user = user or {} %}
   <div class="row justify-content-center">
     <div class="col-lg-8">
       <div class="text-center mb-5">
-        <h1 class="display-5 fw-bold">Добро пожаловать в командную Викторину!</h1>
+        <h1 class="display-5 fw-bold">
+          {% if user.display_name %}
+            Привет, {{ user.display_name }}! Добро пожаловать в Викторину 🎉
+          {% else %}
+            Добро пожаловать в командную Викторину!
+          {% endif %}
+        </h1>
+        <p class="text-muted mb-0">Запустите мини-приложение в Telegram, чтобы мы автоматически вас идентифицировали.</p>
       </div>
+
+      {% if status_message %}
+        <div class="alert alert-success" role="alert">
+          {{ status_message }}
+        </div>
+      {% endif %}
+
+      {% if not user %}
+        <div class="alert alert-warning" role="alert">
+          Мы не смогли определить пользователя. Повторно откройте мини-приложение в Telegram или отправьте initData вручную.
+        </div>
+      {% endif %}
 
       <div class="card shadow-sm mb-4">
         <div class="card-body">
           <h2 class="h4 mb-3">Создать команду</h2>
-          <form id="create-team-form" action="/team/create" method="post" novalidate>
+          <form action="/team/create" method="post">
             <div class="mb-3">
               <label for="team-name" class="form-label">Название команды</label>
               <input type="text" class="form-control" id="team-name" name="team_name" placeholder="Например, Мозговой штурм" required />
             </div>
             <div class="mb-3">
               <label for="create-user" class="form-label">ID пользователя</label>
-              <input type="number" class="form-control" id="create-user" name="user_id" placeholder="Введите ID" required />
+              <input type="number" class="form-control" id="create-user" name="user_id" value="{{ prefill_user_id or '' }}" placeholder="Введите ID" required />
             </div>
-            <button type="submit" class="btn btn-success">Создать команду</button>
+            <button type="submit" class="btn btn-success" {% if not prefill_user_id %}disabled{% endif %}>Создать команду</button>
           </form>
-          <div class="mt-3">
-            <h3 class="h6 text-muted">Ответ сервера</h3>
-            <pre class="bg-dark text-white p-3 rounded" id="create-team-response">Ожидание запроса…</pre>
-          </div>
+          {% if not prefill_user_id %}
+            <p class="text-muted small mb-0 mt-2">ID пользователя подставится автоматически после входа через Telegram.</p>
+          {% endif %}
         </div>
       </div>
 
       <div class="card shadow-sm">
         <div class="card-body">
           <h2 class="h4 mb-3">Присоединиться к команде</h2>
-          <form id="join-team-form" action="/team/join" method="post" novalidate>
+          <form action="/team/join" method="post">
             <div class="mb-3">
               <label for="join-user" class="form-label">ID пользователя</label>
-              <input type="number" class="form-control" id="join-user" name="user_id" placeholder="Введите ID" required />
+              <input type="number" class="form-control" id="join-user" name="user_id" value="{{ prefill_user_id or '' }}" placeholder="Введите ID" required />
             </div>
             <div class="mb-3">
               <label for="join-code" class="form-label">Код команды</label>
               <input type="text" class="form-control" id="join-code" name="code" placeholder="Введите код" required />
             </div>
-            <button type="submit" class="btn btn-primary">Присоединиться</button>
+            <button type="submit" class="btn btn-primary" {% if not prefill_user_id %}disabled{% endif %}>Присоединиться</button>
           </form>
-          <div class="mt-3">
-            <h3 class="h6 text-muted">Ответ сервера</h3>
-            <pre class="bg-dark text-white p-3 rounded" id="join-team-response">Ожидание запроса…</pre>
-          </div>
         </div>
       </div>
     </div>
   </div>
+
+  <form id="login-form" action="/login" method="post" class="d-none">
+    <input type="hidden" name="init_data" id="init-data-field" />
+  </form>
 {% endblock %}
 
 {% block scripts %}
@@ -61,61 +80,13 @@
     const tg = window.Telegram.WebApp;
     tg.ready();
 
-    // сразу логиним пользователя при входе
-    if (tg.initData) {
-      fetch("/login", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ initData: tg.initData })
-      })
-      .then(r => r.json())
-      .then(data => {
-        console.log("Login response:", data);
-        const header = document.querySelector("h1.display-5");
-        if (data.user && data.user.first_name) {
-          header.textContent = `Привет, ${data.user.first_name}! Добро пожаловать в Викторину 🎉`;
-        }
-      })
-      .catch(err => console.error("Login error:", err));
-    } else {
-      console.warn("Нет tg.initData — проверяй запуск из Telegram Mini App");
+    const existingUser = {{ user|default({})|tojson }};
+    const loginForm = document.getElementById("login-form");
+    const initDataField = document.getElementById("init-data-field");
+
+    if ((!existingUser || Object.keys(existingUser).length === 0) && tg.initData) {
+      initDataField.value = tg.initData;
+      loginForm.submit();
     }
-
-    // --- формы создания и присоединения ---
-    const handleFormSubmit = (formId, responseId) => {
-      const form = document.getElementById(formId);
-      const responseContainer = document.getElementById(responseId);
-
-      if (!form || !responseContainer) return;
-
-      form.addEventListener("submit", async (event) => {
-        event.preventDefault();
-        responseContainer.textContent = "Отправка запроса…";
-
-        const formData = new FormData(form);
-        const payload = {};
-        formData.forEach((value, key) => {
-          payload[key] = value;
-        });
-
-        try {
-          const fetchResponse = await fetch(form.action, {
-            method: form.method.toUpperCase(),
-            headers: {
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify(payload),
-          });
-
-          const data = await fetchResponse.json();
-          responseContainer.textContent = JSON.stringify(data, null, 2);
-        } catch (error) {
-          responseContainer.textContent = `Ошибка: ${error}`;
-        }
-      });
-    };
-
-    handleFormSubmit("create-team-form", "create-team-response");
-    handleFormSubmit("join-team-form", "join-team-response");
   </script>
 {% endblock %}

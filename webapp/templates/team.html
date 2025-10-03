@@ -4,11 +4,25 @@
 
 {% block content %}
   {% set team = team or {} %}
+  {% set user = user or {} %}
   <div class="row justify-content-center">
     <div class="col-lg-8">
+      <div class="text-center mb-4">
+        <h1 class="h3 fw-bold mb-2">Команда «{{ team.name or 'Без названия' }}»</h1>
+        {% if user.display_name %}
+          <p class="text-muted mb-0">Вы вошли как {{ user.display_name }}.</p>
+        {% endif %}
+      </div>
+
+      {% if status_message %}
+        <div class="alert alert-success" role="alert">
+          {{ status_message }}
+        </div>
+      {% endif %}
+
       <div class="card shadow-sm mb-4">
         <div class="card-body">
-          <h1 class="h3 mb-4">Информация о команде</h1>
+          <h2 class="h4 mb-4">Информация о команде</h2>
           <dl class="row">
             <dt class="col-sm-4">Название</dt>
             <dd class="col-sm-8">{{ team.name or "—" }}</dd>
@@ -47,7 +61,7 @@
         <div class="card shadow-sm mb-4">
           <div class="card-body">
             <h2 class="h4 mb-3">Управление игрой</h2>
-            <form id="start-game-form" action="/team/start" method="post">
+            <form action="/team/start" method="post">
               <div class="mb-3">
                 <label for="start-user" class="form-label">ID капитана</label>
                 <input type="number" class="form-control" id="start-user" name="user_id" value="{{ captain_id }}" placeholder="Введите ID" required />
@@ -55,58 +69,18 @@
               <input type="hidden" name="team_id" value="{{ team.id }}" />
               <button type="submit" class="btn btn-danger">Начать игру</button>
             </form>
-            <div class="mt-3">
-              <h3 class="h6 text-muted">Ответ сервера</h3>
-              <pre class="bg-dark text-white p-3 rounded" id="start-game-response">Ожидание запроса…</pre>
-            </div>
           </div>
         </div>
       {% endif %}
 
       {% if last_response %}
-        <div class="alert alert-info" role="alert">
-          <h2 class="h6 mb-2">Последний ответ API</h2>
-          <pre class="mb-0">{{ last_response | tojson(indent=2) }}</pre>
+        <div class="card border-info">
+          <div class="card-body">
+            <h2 class="h6 text-info text-uppercase mb-2">Последний ответ сервера</h2>
+            <pre class="mb-0">{{ last_response | tojson(indent=2) }}</pre>
+          </div>
         </div>
       {% endif %}
     </div>
   </div>
-{% endblock %}
-
-{% block scripts %}
-  {{ super() }}
-  {% if user_is_captain %}
-    <script>
-      const startGameForm = document.getElementById("start-game-form");
-      const responseContainer = document.getElementById("start-game-response");
-
-      if (startGameForm && responseContainer) {
-        startGameForm.addEventListener("submit", async (event) => {
-          event.preventDefault();
-          responseContainer.textContent = "Отправка запроса…";
-
-          const formData = new FormData(startGameForm);
-          const payload = {};
-          formData.forEach((value, key) => {
-            payload[key] = value;
-          });
-
-          try {
-            const fetchResponse = await fetch(startGameForm.action, {
-              method: startGameForm.method.toUpperCase(),
-              headers: {
-                "Content-Type": "application/json",
-              },
-              body: JSON.stringify(payload),
-            });
-
-            const data = await fetchResponse.json();
-            responseContainer.textContent = JSON.stringify(data, null, 2);
-          } catch (error) {
-            responseContainer.textContent = `Ошибка: ${error}`;
-          }
-        });
-      }
-    </script>
-  {% endif %}
 {% endblock %}
