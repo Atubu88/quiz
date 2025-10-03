@@ -5,6 +5,63 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Викторины — интерактивная подборка</title>
     <script src="https://unpkg.com/htmx.org@1.9.10" defer></script>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <script>
+      document.addEventListener('DOMContentLoaded', () => {
+        if (!window.Telegram?.WebApp) {
+          return;
+        }
+
+        const webApp = window.Telegram.WebApp;
+        webApp.expand();
+        webApp.ready();
+
+        const user = webApp.initDataUnsafe?.user;
+
+        const greetingElement = document.getElementById('greeting');
+        if (user?.first_name && greetingElement) {
+          greetingElement.textContent = `Привет, ${user.first_name}!`;
+        }
+
+        if (!webApp.initData || !user) {
+          return;
+        }
+
+        const payload = {
+          initData: webApp.initData,
+          user: {
+            id: user.id,
+            username: user.username ?? null,
+            first_name: user.first_name ?? '',
+            last_name: user.last_name ?? null,
+          },
+        };
+
+        fetch('/login', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(payload),
+        })
+          .then((response) => {
+            if (!response.ok) {
+              throw new Error(`Request failed with status ${response.status}`);
+            }
+            return response.json().catch(() => null);
+          })
+          .then((data) => {
+            if (!data?.user?.first_name || !greetingElement) {
+              return;
+            }
+            greetingElement.textContent = `Привет, ${data.user.first_name}!`;
+            greetingElement.classList.remove('hidden');
+          })
+          .catch((error) => {
+            console.error('Failed to authorize user', error);
+          });
+      });
+    </script>
     <link
       rel="stylesheet"
       href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
@@ -60,6 +117,17 @@
         backdrop-filter: blur(18px);
         display: flex;
         flex-direction: column;
+      }
+
+      .hidden {
+        display: none !important;
+      }
+
+      .greeting {
+        font-size: clamp(1.05rem, 2.2vw, 1.35rem);
+        font-weight: 600;
+        color: var(--accent-strong);
+        margin-bottom: clamp(0.75rem, 1.8vw, 1.25rem);
       }
 
       .layout__surface:has(.home-view) {
@@ -638,6 +706,10 @@
           box-shadow: 0 30px 60px rgba(2, 6, 23, 0.65);
         }
 
+        .greeting {
+          color: #c7d2fe;
+        }
+
         .home-header__subtitle,
         .category-summary__description,
         .quiz-card__description,
@@ -684,6 +756,7 @@
   <body>
     <main class="layout" hx-target="this">
       <div class="layout__surface">
+        <p id="greeting" class="greeting hidden"></p>
         <div id="content">
           {% if active_view == "quiz" %}
             {% include "quiz.html" %}
