@@ -3,6 +3,13 @@
 {% block title %}Главная · Командная Викторина{% endblock %}
 
 {% block content %}
+  {% if login_success and user %}
+    <div class="alert alert-success text-start" role="alert">
+      <h2 class="h5 mb-2">Вход выполнен</h2>
+      <p class="mb-1">ID пользователя: <strong>{{ user.id }}</strong></p>
+      <p class="mb-0">Логин: {{ user.username or "—" }}</p>
+    </div>
+  {% endif %}
   <div class="text-center mt-5">
     <h1 class="display-5 fw-bold mb-4">Добро пожаловать в Командную Викторину 🎉</h1>
 

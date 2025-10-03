@@ -11,12 +11,12 @@ import secrets
 import string
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Type, TypeVar
 from urllib.parse import parse_qs
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request, status
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
@@ -255,6 +255,25 @@ async def _add_team_member(team_id: str, user_id: int, is_captain: bool) -> Dict
     return created[0] if isinstance(created, list) else created
 
 
+TModel = TypeVar("TModel", bound=BaseModel)
+
+
+async def _parse_request_payload(request: Request, model: Type[TModel]) -> TModel:
+    """Extract data from JSON or form payload and validate it with the given model."""
+
+    content_type = request.headers.get("content-type", "").split(";")[0].strip().lower()
+    if content_type == "application/json":
+        raw = await request.json()
+    else:
+        form = await request.form()
+        raw = dict(form)
+    return model.model_validate(raw)
+
+
+def _is_json_request(request: Request) -> bool:
+    return "application/json" in request.headers.get("content-type", "").lower()
+
+
 async def _fetch_active_quiz() -> Dict[str, Any]:
     quiz = await _fetch_single_record("quizzes", {"is_active": "eq.true"}, select="id,title,description")
     if not quiz:
@@ -304,25 +323,102 @@ async def debug_init(initData: str) -> Dict[str, Any]:
     return {"parsed": parsed}
 
 
-@app.post("/login")
-async def login(payload: LoginRequest) -> Dict[str, Any]:
-    init_payload = _validate_init_data(payload.init_data)
-    user_record = await _get_or_create_user(init_payload["user"])
+def _build_member_representation(user: Dict[str, Any], *, is_captain: bool) -> Dict[str, Any]:
+    """Prepare the minimal set of fields that `team.html` expects for a member."""
+
     return {
-        "user": {
-            "id": user_record["id"],
-            "telegram_id": user_record["telegram_id"],
-            "username": user_record.get("username"),
-            "first_name": user_record.get("first_name"),
-            "last_name": user_record.get("last_name"),
-        },
-        "redirect": "/",
+        "name": user.get("first_name")
+        or user.get("last_name")
+        or user.get("username")
+        or "Без имени",
+        "username": user.get("username"),
+        "is_captain": is_captain,
     }
 
 
-@app.post("/team/create")
-async def create_team(payload: CreateTeamRequest) -> Dict[str, Any]:
+def _build_team_context(
+    request: Request,
+    *,
+    team: Dict[str, Any],
+    user: Dict[str, Any],
+    member: Optional[Dict[str, Any]] = None,
+    last_response: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Common helper for rendering the `team.html` template."""
+
+    members: List[Dict[str, Any]] = []
+
+    existing_members = team.get("members")
+    if isinstance(existing_members, list):
+        members = existing_members
+
+    # Ensure the current user is present in the rendered list so that the template
+    # always shows at least one participant.
+    members_keys = {
+        (m.get("username"), m.get("name")) for m in members if isinstance(m, dict)
+    }
+
+    user_key = (
+        user.get("username"),
+        user.get("first_name") or user.get("last_name") or user.get("username"),
+    )
+
+    inferred_is_captain = bool(
+        member.get("is_captain")
+        if member is not None
+        else team.get("captain_id") == user.get("telegram_id")
+    )
+
+    if user_key not in members_keys:
+        members.append(
+            _build_member_representation(
+                {
+                    "first_name": user.get("first_name"),
+                    "last_name": user.get("last_name"),
+                    "username": user.get("username"),
+                },
+                is_captain=inferred_is_captain,
+            )
+        )
+
+    context = {
+        "request": request,
+        "team": {**team, "members": members},
+        "user_is_captain": inferred_is_captain,
+        "captain_id": user.get("id"),
+        "last_response": last_response,
+    }
+    return context
+
+
+@app.post("/login", response_class=HTMLResponse)
+async def login(request: Request) -> HTMLResponse:
+    payload = await _parse_request_payload(request, LoginRequest)
+    init_payload = _validate_init_data(payload.init_data)
+    user_record = await _get_or_create_user(init_payload["user"])
+    user_payload = {
+        "id": user_record["id"],
+        "telegram_id": user_record["telegram_id"],
+        "username": user_record.get("username"),
+        "first_name": user_record.get("first_name"),
+        "last_name": user_record.get("last_name"),
+    }
+
+    if _is_json_request(request):
+        return JSONResponse({"user": user_payload, "redirect": "/"})
+
+    context = {
+        "request": request,
+        "user": user_payload,
+        "login_success": True,
+    }
+    return templates.TemplateResponse("index.html", context)
+
+
+@app.post("/team/create", response_class=HTMLResponse)
+async def create_team(request: Request) -> HTMLResponse:
     """Create a team with a unique code and assign the captain."""
+    payload = await _parse_request_payload(request, CreateTeamRequest)
     user = await _ensure_user_exists(payload.user_id)
     code = await _generate_unique_team_code()
     team_payload = {
@@ -337,13 +433,25 @@ async def create_team(payload: CreateTeamRequest) -> Dict[str, Any]:
         prefer="return=representation",
     )
     team_data = team_response[0] if isinstance(team_response, list) else team_response
-    await _add_team_member(team_data["id"], user["id"], is_captain=True)
-    return {"team": team_data, "code": code, "redirect": f"/team/{team_data['id']}"}
+    member = await _add_team_member(team_data["id"], user["id"], is_captain=True)
+
+    if _is_json_request(request):
+        return JSONResponse({"team": team_data, "code": code, "redirect": f"/team/{team_data['id']}"})
+
+    context = _build_team_context(
+        request,
+        team={**team_data, "code": code},
+        user=user,
+        member=member,
+        last_response={"team": team_data, "code": code},
+    )
+    return templates.TemplateResponse("team.html", context)
 
 
-@app.post("/team/join")
-async def join_team(payload: JoinTeamRequest) -> Dict[str, Any]:
+@app.post("/team/join", response_class=HTMLResponse)
+async def join_team(request: Request) -> HTMLResponse:
     """Join an existing team using an invite code."""
+    payload = await _parse_request_payload(request, JoinTeamRequest)
     user = await _ensure_user_exists(payload.user_id)
     team = await _fetch_single_record("teams", {"code": f"eq.{payload.code.upper()}"})
     if not team:
@@ -353,12 +461,23 @@ async def join_team(payload: JoinTeamRequest) -> Dict[str, Any]:
     if not existing_member:
         existing_member = await _add_team_member(team["id"], user["id"], is_captain=False)
 
-    return {"team": team, "member": existing_member, "redirect": f"/team/{team['id']}"}
+    if _is_json_request(request):
+        return JSONResponse({"team": team, "member": existing_member, "redirect": f"/team/{team['id']}"})
+
+    context = _build_team_context(
+        request,
+        team=team,
+        user=user,
+        member=existing_member,
+        last_response={"team": team, "member": existing_member},
+    )
+    return templates.TemplateResponse("team.html", context)
 
 
-@app.post("/team/start")
-async def start_team(payload: StartTeamRequest) -> Dict[str, Any]:
+@app.post("/team/start", response_class=HTMLResponse)
+async def start_team(request: Request) -> HTMLResponse:
     """Mark the team as started and load quiz data into cache for fast access."""
+    payload = await _parse_request_payload(request, StartTeamRequest)
     user = await _ensure_user_exists(payload.user_id)
     team = await _ensure_team_exists(payload.team_id)
 
@@ -368,20 +487,40 @@ async def start_team(payload: StartTeamRequest) -> Dict[str, Any]:
 
     if team.get("start_time"):
         quiz_payload = QUIZ_CACHE.get(team["id"]) or await _load_quiz_into_cache(team["id"])
-        return {"team": team, "quiz": quiz_payload, "redirect": f"/quiz/{team['id']}"}
+    else:
+        start_time = datetime.now(timezone.utc).isoformat()
+        updated_team = await _supabase_request(
+            "PATCH",
+            "teams",
+            params={"id": f"eq.{team['id']}"},
+            json_payload={"start_time": start_time},
+            prefer="return=representation",
+        )
+        if isinstance(updated_team, list):
+            team = updated_team[0]
+        else:
+            team = updated_team
+        quiz_payload = await _load_quiz_into_cache(team["id"])
 
-    start_time = datetime.now(timezone.utc).isoformat()
-    updated_team = await _supabase_request(
-        "PATCH",
-        "teams",
-        params={"id": f"eq.{team['id']}"},
-        json_payload={"start_time": start_time},
-        prefer="return=representation",
-    )
-    if isinstance(updated_team, list):
-        updated_team = updated_team[0]
-    quiz_payload = await _load_quiz_into_cache(team["id"])
-    return {"team": updated_team, "quiz": quiz_payload, "redirect": f"/quiz/{team['id']}"}
+    if _is_json_request(request):
+        return JSONResponse({"team": team, "quiz": quiz_payload, "redirect": f"/quiz/{team['id']}"})
+
+    first_question = None
+    if isinstance(quiz_payload, dict):
+        questions = quiz_payload.get("questions") or []
+        if questions:
+            first_question = questions[0]
+
+    context = {
+        "request": request,
+        "team": team,
+        "quiz": quiz_payload,
+        "question": first_question,
+        "answers": first_question.get("options") if isinstance(first_question, dict) else None,
+        "game_id": team.get("id"),
+        "last_response": {"team": team, "quiz": quiz_payload},
+    }
+    return templates.TemplateResponse("quiz.html", context)
 
 
 @app.get("/me")
