@@ -245,6 +245,44 @@ async def read_root(request: Request) -> HTMLResponse:
     return templates.TemplateResponse("index.html", {"request": request})
 
 
+async def _fetch_team_members(team_id: str) -> List[Dict[str, Any]]:
+    members = await _supabase_request(
+        "GET",
+        "team_members",
+        params={
+            "select": "id,is_captain,user:users(id,telegram_id,username,first_name,last_name)",
+            "team_id": f"eq.{team_id}",
+            "order": "id.asc",
+        },
+    )
+    return members or []
+
+
+@app.get("/team/{team_id}", response_class=HTMLResponse)
+async def team_detail(request: Request, team_id: str) -> HTMLResponse:
+    team = await _ensure_team_exists(team_id)
+    members = await _fetch_team_members(team_id)
+    context = {"request": request, "team": team, "members": members}
+    return templates.TemplateResponse("team.html", context)
+
+
+@app.get("/quiz/{team_id}", response_class=HTMLResponse)
+async def quiz_detail(request: Request, team_id: str) -> HTMLResponse:
+    team = await _ensure_team_exists(team_id)
+    quiz_payload = QUIZ_CACHE.get(team_id)
+    if not quiz_payload:
+        quiz_payload = await _load_quiz_into_cache(team_id)
+    questions = quiz_payload.get("questions", [])
+    first_question = questions[0] if questions else None
+    context = {
+        "request": request,
+        "team": team,
+        "quiz": quiz_payload,
+        "question": first_question,
+    }
+    return templates.TemplateResponse("quiz.html", context)
+
+
 @app.post("/login")
 async def login(payload: LoginRequest) -> Dict[str, Any]:
     """Validate Telegram init data and ensure the user exists in Supabase."""
@@ -258,7 +296,8 @@ async def login(payload: LoginRequest) -> Dict[str, Any]:
             "username": user_record.get("username"),
             "first_name": user_record.get("first_name"),
             "last_name": user_record.get("last_name"),
-        }
+        },
+        "redirect": "/",
     }
     return response
 
@@ -282,7 +321,7 @@ async def create_team(payload: CreateTeamRequest) -> Dict[str, Any]:
     )
     team_data = team_response[0] if isinstance(team_response, list) else team_response
     await _add_team_member(team_data["id"], user["id"], is_captain=True)
-    return {"team": team_data, "code": code}
+    return {"team": team_data, "code": code, "redirect": f"/team/{team_data['id']}"}
 
 
 @app.post("/team/join")
@@ -298,7 +337,7 @@ async def join_team(payload: JoinTeamRequest) -> Dict[str, Any]:
     if not existing_member:
         existing_member = await _add_team_member(team["id"], user["id"], is_captain=False)
 
-    return {"team": team, "member": existing_member}
+    return {"team": team, "member": existing_member, "redirect": f"/team/{team['id']}"}
 
 
 @app.post("/team/start")
@@ -314,7 +353,7 @@ async def start_team(payload: StartTeamRequest) -> Dict[str, Any]:
 
     if team.get("start_time"):
         quiz_payload = QUIZ_CACHE.get(team["id"]) or await _load_quiz_into_cache(team["id"])
-        return {"team": team, "quiz": quiz_payload}
+        return {"team": team, "quiz": quiz_payload, "redirect": f"/quiz/{team['id']}"}
 
     start_time = datetime.now(timezone.utc).isoformat()
     updated_team = await _supabase_request(
@@ -327,4 +366,4 @@ async def start_team(payload: StartTeamRequest) -> Dict[str, Any]:
     if isinstance(updated_team, list):
         updated_team = updated_team[0]
     quiz_payload = await _load_quiz_into_cache(team["id"])
-    return {"team": updated_team, "quiz": quiz_payload}
+    return {"team": updated_team, "quiz": quiz_payload, "redirect": f"/quiz/{team['id']}"}
