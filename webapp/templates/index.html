@@ -38,6 +38,45 @@
     }
 
     // обработка кнопок
+    const handleJsonResponse = async (response) => {
+      let data = null;
+      try {
+        data = await response.json();
+      } catch (_) {
+        // ignore parsing error, will be handled below
+      }
+
+      if (!response.ok || !data) {
+        const detail = data && data.detail;
+        const message =
+          (typeof detail === "string" && detail) ||
+          (detail && detail.error) ||
+          (detail && detail.message) ||
+          response.statusText ||
+          "Неизвестная ошибка";
+        throw new Error(message);
+      }
+
+      return data;
+    };
+
+    const redirectToTeam = (payload) => {
+      const redirectPath =
+        payload.redirect ||
+        (payload.team && payload.team.id ? `/team/${payload.team.id}` : null);
+
+      if (!redirectPath) {
+        throw new Error("Некорректный ответ сервера");
+      }
+
+      const url = new URL(redirectPath, window.location.origin);
+      if (currentUser && currentUser.id && !url.searchParams.has("user_id")) {
+        url.searchParams.set("user_id", currentUser.id);
+      }
+
+      window.location.href = url.toString();
+    };
+
     document.getElementById("btn-create").onclick = () => {
       if (!currentUser) return alert("Ошибка: не удалось определить пользователя");
       const teamName = prompt("Введите название команды:");
@@ -48,9 +87,9 @@
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ user_id: currentUser.id, team_name: teamName })
       })
-      .then(r => r.json())
-      .then(data => window.location.href = `/team/${data.team.id}`)
-      .catch(err => alert("Ошибка создания команды: " + err));
+      .then(handleJsonResponse)
+      .then(redirectToTeam)
+      .catch(err => alert("Ошибка создания команды: " + err.message));
     };
 
     document.getElementById("btn-join").onclick = () => {
@@ -63,9 +102,9 @@
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ user_id: currentUser.id, code })
       })
-      .then(r => r.json())
-      .then(data => window.location.href = `/team/${data.team.id}`)
-      .catch(err => alert("Ошибка присоединения: " + err));
+      .then(handleJsonResponse)
+      .then(redirectToTeam)
+      .catch(err => alert("Ошибка присоединения: " + err.message));
     };
   </script>
 {% endblock %}
