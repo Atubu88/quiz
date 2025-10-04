@@ -566,48 +566,43 @@ async def _build_match_status_response(match_id: str, fallback_team: dict | None
     - список команд с пометкой "готова/нет"
     - если все готовы → редирект на игру
     """
-    # если match_id не пришёл — fallback на команду
+
     if not match_id and fallback_team:
         match_id = fallback_team.get("match_id") or fallback_team.get("id")
 
     if not match_id:
         return {"status": "error", "message": "Не удалось определить матч"}
 
-    # Собираем все команды, участвующие в матче
-    team_ids = list(MATCH_TEAM_CACHE.get(match_id, set()))
+    teams = await _get_match_teams(match_id, fallback_team)
+    statuses, all_ready = _collect_match_team_statuses(teams)
 
-    teams_status = []
-    all_ready = True
+    cached_team_ids = MATCH_TEAM_CACHE.setdefault(match_id, set())
+    your_team_id = _normalize_identifier(fallback_team.get("id")) if fallback_team else None
 
-    for tid in team_ids:
-        ready = TEAM_READY_CACHE.get(tid, False)
-        # Пытаемся подтянуть инфо о команде (название)
-        try:
-            team = await _ensure_team_exists(tid)
-            name = team.get("name", tid)
-        except Exception:
-            name = tid
+    response_teams: list[dict[str, Any]] = []
+    for status in statuses:
+        team_id = status.get("id")
+        if team_id:
+            cached_team_ids.add(team_id)
 
-        # Если одна из команд не готова — флаг сбиваем
-        if not ready:
-            all_ready = False
+        response_teams.append(
+            {
+                "id": team_id,
+                "name": status.get("name") or team_id,
+                "ready": bool(status.get("ready")),
+                "is_yours": bool(your_team_id and team_id == your_team_id),
+            }
+        )
 
-        teams_status.append({
-            "team_id": tid,
-            "name": name,
-            "ready": ready,
-            "is_yours": fallback_team and tid == fallback_team.get("id")
-        })
-
-    response = {
-        "status": "waiting" if not all_ready else "ready",
-        "teams": teams_status,
+    response: dict[str, Any] = {
+        "status": "ready" if all_ready else "waiting",
+        "teams": response_teams,
     }
 
-    # Если все готовы → редиректим на матч
-    if all_ready and match_id:
+    if all_ready:
         response["redirect"] = f"/game/{match_id}"
 
+    MATCH_STATUS_CACHE[match_id] = response
     return response
 
 
