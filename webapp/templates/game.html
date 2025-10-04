@@ -41,6 +41,8 @@
             method="get"
             action="{{ url_for('game_screen', match_id=match_id) }}"
           >
+            <input type="hidden" name="team_id" value="{{ team_id }}" />
+            <input type="hidden" name="user_id" value="{{ current_user_id }}" />
             <input type="hidden" name="question_index" value="{{ question_index }}" />
             {% for option in answers %}
               <div class="form-check">
@@ -69,46 +71,62 @@
           <h3 class="h4">Викторина завершена!</h3>
           <p class="text-muted mb-4">Вы ответили на все вопросы. Спасибо за игру!</p>
 
-          {% if winning_team %}
-            <div class="mb-4">
-              <div class="fs-4 mb-1">🏆 {{ winning_team.team_name }}</div>
-              <div class="text-secondary">💯 {{ winning_team.score }} очков</div>
+          {% if team_waiting_for_members %}
+            <div
+              class="alert alert-info"
+              role="alert"
+              {% if team_status_poll_url %}data-team-progress-container data-team-status-url="{{ team_status_poll_url }}"{% endif %}
+            >
+              <p class="mb-2">{{ team_waiting_message }}</p>
+              {% if team_members_total %}
+                <p class="mb-0 text-muted small">
+                  Прогресс команды:
+                  <span data-team-progress-counter>{{ team_members_completed }} из {{ team_members_total }}</span>
+                </p>
+              {% endif %}
             </div>
           {% else %}
-            <p class="mb-4">Результаты команд появятся, как только организатор их опубликует.</p>
-          {% endif %}
+            {% if winning_team %}
+              <div class="mb-4">
+                <div class="fs-4 mb-1">🏆 {{ winning_team.team_name }}</div>
+                <div class="text-secondary">💯 {{ winning_team.score }} очков</div>
+              </div>
+            {% else %}
+              <p class="mb-4">Результаты команд появятся, как только организатор их опубликует.</p>
+            {% endif %}
 
-          {% if team_scoreboard %}
-            <div class="table-responsive">
-              <table class="table table-sm align-middle mb-0">
-                <thead class="table-light">
-                  <tr>
-                    <th scope="col" class="text-center">Место</th>
-                    <th scope="col">Команда</th>
-                    <th scope="col" class="text-end">Очки</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {% for entry in team_scoreboard %}
-                    {% set rank = loop.index %}
-                    {% if rank == 1 %}
-                      {% set medal = "🥇" %}
-                    {% elif rank == 2 %}
-                      {% set medal = "🥈" %}
-                    {% elif rank == 3 %}
-                      {% set medal = "🥉" %}
-                    {% else %}
-                      {% set medal = "" %}
-                    {% endif %}
+            {% if team_scoreboard %}
+              <div class="table-responsive">
+                <table class="table table-sm align-middle mb-0">
+                  <thead class="table-light">
                     <tr>
-                      <td class="text-center">{{ medal }} {{ rank }}</td>
-                      <td>{{ entry.team_name }}</td>
-                      <td class="text-end fw-semibold">{{ entry.score }}</td>
+                      <th scope="col" class="text-center">Место</th>
+                      <th scope="col">Команда</th>
+                      <th scope="col" class="text-end">Очки</th>
                     </tr>
-                  {% endfor %}
-                </tbody>
-              </table>
-            </div>
+                  </thead>
+                  <tbody>
+                    {% for entry in team_scoreboard %}
+                      {% set rank = loop.index %}
+                      {% if rank == 1 %}
+                        {% set medal = "🥇" %}
+                      {% elif rank == 2 %}
+                        {% set medal = "🥈" %}
+                      {% elif rank == 3 %}
+                        {% set medal = "🥉" %}
+                      {% else %}
+                        {% set medal = "" %}
+                      {% endif %}
+                      <tr>
+                        <td class="text-center">{{ medal }} {{ rank }}</td>
+                        <td>{{ entry.team_name }}</td>
+                        <td class="text-end fw-semibold">{{ entry.score }}</td>
+                      </tr>
+                    {% endfor %}
+                  </tbody>
+                </table>
+              </div>
+            {% endif %}
           {% endif %}
         </div>
       </div>
@@ -119,4 +137,54 @@
       </div>
     {% endif %}
   </div>
+{% endblock %}
+
+{% block scripts %}
+  {{ super() }}
+  {% if team_waiting_for_members and team_status_poll_url %}
+    <script>
+      (function () {
+        const container = document.querySelector('[data-team-progress-container]');
+        if (!container) {
+          return;
+        }
+
+        const statusUrl = container.getAttribute('data-team-status-url');
+        if (!statusUrl) {
+          return;
+        }
+
+        const counter = container.querySelector('[data-team-progress-counter]');
+        const POLL_INTERVAL_MS = 5000;
+
+        const pollStatus = async () => {
+          try {
+            const response = await fetch(statusUrl, { headers: { Accept: 'application/json' } });
+            if (!response.ok) {
+              return;
+            }
+
+            const data = await response.json();
+            if (data && data.team_completed) {
+              window.location.reload();
+              return;
+            }
+
+            if (
+              counter &&
+              typeof data.team_members_completed === 'number' &&
+              typeof data.team_members_total === 'number'
+            ) {
+              counter.textContent = `${data.team_members_completed} из ${data.team_members_total}`;
+            }
+          } catch (error) {
+            console.warn('Не удалось обновить статус команды', error);
+          }
+        };
+
+        pollStatus();
+        setInterval(pollStatus, POLL_INTERVAL_MS);
+      })();
+    </script>
+  {% endif %}
 {% endblock %}
