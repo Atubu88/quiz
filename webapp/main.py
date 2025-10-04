@@ -528,6 +528,94 @@ async def _get_match_teams(
     return teams
 
 
+async def _fetch_team_scoreboard(match_id: str, quiz_id: Any) -> List[Dict[str, Any]]:
+    """Возвращает таблицу результатов команд по матчу."""
+
+    if not match_id or quiz_id in (None, ""):
+        return []
+
+    try:
+        teams = await _supabase_request(
+            "GET",
+            "teams",
+            params={
+                "match_id": f"eq.{match_id}",
+                "select": "id,name",
+            },
+        ) or []
+    except HTTPException as exc:
+        logging.info("Failed to fetch teams for scoreboard %s: %s", match_id, exc.detail)
+        teams = []
+
+    team_lookup: Dict[str, str] = {}
+    for team in teams:
+        team_id = _normalize_identifier(team.get("id"))
+        if not team_id:
+            continue
+        team_lookup[team_id] = team.get("name") or team_id
+
+    try:
+        results = await _supabase_request(
+            "GET",
+            "team_results",
+            params={
+                "quiz_id": f"eq.{quiz_id}",
+                "select": "team_id,score,time_taken",
+                "order": "score.desc,time_taken.asc",
+            },
+        ) or []
+    except HTTPException as exc:
+        logging.info("Failed to fetch team results for match %s: %s", match_id, exc.detail)
+        results = []
+
+    scoreboard: List[Dict[str, Any]] = []
+    seen: Set[str] = set()
+
+    for result in results:
+        team_id = _normalize_identifier(result.get("team_id"))
+        if team_id is None:
+            continue
+        if team_lookup and team_id not in team_lookup:
+            continue
+
+        score_raw = result.get("score")
+        try:
+            score = int(score_raw)
+        except (TypeError, ValueError):
+            score = 0
+
+        entry = {
+            "team_id": team_id,
+            "team_name": team_lookup.get(team_id, team_id),
+            "score": score,
+            "time_taken": result.get("time_taken"),
+        }
+        scoreboard.append(entry)
+        seen.add(team_id)
+
+    for team_id, team_name in team_lookup.items():
+        if team_id in seen:
+            continue
+        scoreboard.append(
+            {
+                "team_id": team_id,
+                "team_name": team_name,
+                "score": 0,
+                "time_taken": None,
+            }
+        )
+
+    scoreboard.sort(
+        key=lambda item: (
+            -(item.get("score") or 0),
+            item.get("time_taken") if item.get("time_taken") is not None else float("inf"),
+            item.get("team_name") or "",
+        )
+    )
+
+    return scoreboard
+
+
 def _collect_match_team_statuses(teams: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], bool]:
     statuses: List[Dict[str, Any]] = []
     # матчу нужно минимум 2 команды
@@ -1164,10 +1252,16 @@ async def game_screen(request: Request, match_id: str):
     quiz_finished = total_questions == 0 or next_index >= total_questions
     current_question: Optional[Dict[str, Any]] = None
     answers: List[Dict[str, Any]] = []
+    team_scoreboard: List[Dict[str, Any]] = []
+    winning_team: Optional[Dict[str, Any]] = None
 
     if not quiz_finished and questions:
         current_question = questions[next_index]
         answers = (current_question.get("options") or [])
+    elif quiz_finished:
+        team_scoreboard = await _fetch_team_scoreboard(match_id, quiz.get("id"))
+        if team_scoreboard:
+            winning_team = team_scoreboard[0]
 
     context = {
         "request": request,
@@ -1184,6 +1278,8 @@ async def game_screen(request: Request, match_id: str):
         "selected_answer_text": selected_answer_text,
         "explanation": explanation,
         "quiz_finished": quiz_finished,
+        "team_scoreboard": team_scoreboard,
+        "winning_team": winning_team,
     }
     return templates.TemplateResponse("game.html", context)
 
