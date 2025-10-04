@@ -24,6 +24,22 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 
+from webapp.services.supabase_client import (
+    _fetch_active_quiz,
+    _fetch_single_record,
+    _supabase_request,
+)
+from webapp.utils.cache import (
+    MATCH_CACHE,
+    MATCH_QUIZ_CACHE,
+    MATCH_STATUS_CACHE,
+    MATCH_TEAM_CACHE,
+    QUIZ_CACHE,
+    TEAM_PROGRESS_CACHE,
+    TEAM_READY_CACHE,
+    _matches_ready,
+)
+
 BASE_DIR = Path(__file__).resolve().parent
 TEMPLATES_DIR = BASE_DIR / "templates"
 STATIC_DIR = BASE_DIR / "static"
@@ -37,13 +53,6 @@ if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN environment variable is required for Telegram init data validation.")
 if not SUPABASE_URL or not SUPABASE_API_KEY:
     raise RuntimeError("SUPABASE_URL and SUPABASE_API_KEY must be configured.")
-
-QUIZ_CACHE: dict[str, dict[str, Any]] = {}
-MATCH_CACHE: dict[str, Dict[str, Any]] = {}
-MATCH_STATUS_CACHE: dict[str, Dict[str, Any]] = {}
-MATCH_TEAM_CACHE: dict[str, Set[str]] = {}
-TEAM_READY_CACHE: dict[str, bool] = {}
-TEAM_PROGRESS_CACHE: dict[str, Dict[str, Any]] = {}
 
 app = FastAPI(title="Quiz Mini App")
 
@@ -83,83 +92,6 @@ class DeleteTeamRequest(BaseModel):
 
 
 # ------------------- ВСПОМОГАТЕЛЬНЫЕ -------------------
-_matches_ready: dict[str, list[str]] = {}
-
-# Кэш для матчей и их викторин
-MATCH_QUIZ_CACHE: dict[str, str] = {}
-
-
-def _build_supabase_headers(prefer: Optional[str] = None) -> Dict[str, str]:
-    headers = {
-        "apikey": SUPABASE_API_KEY,
-        "Authorization": f"Bearer {SUPABASE_API_KEY}",
-        "Content-Type": "application/json",
-        "Accept": "application/json",
-    }
-    if prefer:
-        headers["Prefer"] = prefer
-    return headers
-
-
-async def _supabase_request(
-    method: str,
-    path: str,
-    *,
-    params: Optional[Dict[str, Any]] = None,
-    json_payload: Optional[Dict[str, Any] | List[Dict[str, Any]]] = None,
-    prefer: Optional[str] = None
-) -> Any:
-    url = f"{SUPABASE_URL}/rest/v1/{path}"
-    headers = _build_supabase_headers(prefer)
-
-    try:
-        async with httpx.AsyncClient(timeout=15) as client:
-            response = await client.request(method, url, params=params, json=json_payload, headers=headers)
-    except Exception as e:
-        logging.exception("❌ Network error to Supabase: %s", e)
-        # 502 только для сетевых ошибок
-        raise HTTPException(status_code=502, detail=f"Supabase network error: {str(e)}")
-
-    # ЛОГИРУЕМ ВСЁ
-    logging.debug(
-        "Supabase [%s %s] %s -> %s\nparams=%s\npayload=%s\nresp=%s",
-        method, path, response.status_code, url, params, json_payload, response.text
-    )
-
-    # Пробрасываем ИСХОДНЫЙ статус Supabase + текст
-    if response.status_code >= 400:
-        # Пытаемся вытащить json, иначе отдаём сырой текст
-        try:
-            detail = response.json()
-        except ValueError:
-            detail = {"message": response.text}
-        raise HTTPException(
-            status_code=response.status_code,
-            detail={
-                "source": "Supabase",
-                "status": response.status_code,
-                "path": path,
-                "params": params,
-                "payload": json_payload,
-                "detail": detail,
-            },
-        )
-
-    if response.status_code == status.HTTP_204_NO_CONTENT:
-        return None
-
-    try:
-        return response.json()
-    except ValueError:
-        # бывает пустой ответ/текст; возвращаем как есть
-        return response.text
-
-
-
-async def _fetch_single_record(table: str, filters: Dict[str, str], select: str = "*") -> Optional[Dict[str, Any]]:
-    params: Dict[str, Any] = {"select": select, **filters, "limit": 1}
-    data = await _supabase_request("GET", table, params=params)
-    return data[0] if data else None
 
 
 def _calc_hmacs(token: str, data_check_string: str) -> Dict[str, str]:
@@ -427,24 +359,6 @@ async def _parse_request_payload(request: Request, model: Type[TModel]) -> TMode
 
 def _is_json_request(request: Request) -> bool:
     return "application/json" in request.headers.get("content-type", "").lower()
-
-
-async def _fetch_active_quiz() -> Dict[str, Any]:
-    quiz = await _fetch_single_record("quizzes", {"is_active": "eq.true"}, select="id,title,description")
-    if not quiz:
-        raise HTTPException(status_code=404, detail="No active quiz configured")
-
-    questions = await _supabase_request(
-        "GET",
-        "questions",
-        params={
-            "select": "id,quiz_id,text,explanation,options(id,question_id,text,is_correct)",
-            "quiz_id": f"eq.{quiz['id']}",
-            "order": "id.asc",
-        },
-    )
-    quiz["questions"] = questions
-    return quiz
 
 
 async def _load_quiz_into_cache(team_id: str) -> Dict[str, Any]:
