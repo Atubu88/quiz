@@ -15,7 +15,7 @@ import string
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple, Type, TypeVar
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, urlencode
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request, status
@@ -43,6 +43,7 @@ MATCH_CACHE: dict[str, Dict[str, Any]] = {}
 MATCH_STATUS_CACHE: dict[str, Dict[str, Any]] = {}
 MATCH_TEAM_CACHE: dict[str, Set[str]] = {}
 TEAM_READY_CACHE: dict[str, bool] = {}
+TEAM_PROGRESS_CACHE: dict[str, Dict[str, Any]] = {}
 
 app = FastAPI(title="Quiz Mini App")
 
@@ -616,6 +617,220 @@ async def _fetch_team_scoreboard(match_id: str, quiz_id: Any) -> List[Dict[str, 
     return scoreboard
 
 
+def _parse_iso_datetime(value: Any) -> Optional[datetime]:
+    if value in (None, ""):
+        return None
+
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+
+    if isinstance(value, str):
+        candidate = value.strip()
+        if not candidate:
+            return None
+        try:
+            if candidate.endswith("Z"):
+                candidate = candidate[:-1] + "+00:00"
+            dt = datetime.fromisoformat(candidate)
+        except ValueError:
+            return None
+        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+    return None
+
+
+async def _ensure_team_progress(
+    match_id: str,
+    team: Dict[str, Any],
+    quiz_id: Any = None,
+) -> Dict[str, Any]:
+    """Готовит структуру для отслеживания прогресса команды в викторине."""
+
+    normalized_match_id = _normalize_identifier(match_id)
+    normalized_team_id = _normalize_identifier(team.get("id"))
+
+    if not normalized_match_id or not normalized_team_id:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="Некорректный идентификатор матча или команды")
+
+    match_progress = TEAM_PROGRESS_CACHE.setdefault(normalized_match_id, {})
+    team_progress = match_progress.get(normalized_team_id)
+
+    members: List[Dict[str, Any]] = []
+    if isinstance(team.get("members"), list):
+        members = list(team["members"])
+    else:
+        try:
+            members = await _fetch_team_members(normalized_team_id)
+        except HTTPException:
+            members = []
+    member_ids = {str(m.get("id")) for m in members if m.get("id") is not None}
+
+    if not team_progress:
+        team_progress = {
+            "team_id": normalized_team_id,
+            "match_id": normalized_match_id,
+            "quiz_id": quiz_id,
+            "member_ids": member_ids,
+            "answers": {},
+            "completed_members": set(),
+            "team_completed": False,
+            "team_score": None,
+            "team_start_time": team.get("start_time"),
+            "time_taken": None,
+        }
+        match_progress[normalized_team_id] = team_progress
+    else:
+        if quiz_id not in (None, "") and team_progress.get("quiz_id") in (None, ""):
+            team_progress["quiz_id"] = quiz_id
+        if member_ids:
+            team_progress["member_ids"] = member_ids
+        if not team_progress.get("team_start_time") and team.get("start_time"):
+            team_progress["team_start_time"] = team.get("start_time")
+
+    return team_progress
+
+
+def _ensure_player_progress_entry(team_progress: Dict[str, Any], user_id: int) -> Dict[str, Any]:
+    players: Dict[str, Dict[str, Any]] = team_progress.setdefault("answers", {})
+    key = str(user_id)
+    entry = players.get(key)
+    if not entry:
+        entry = {"score": 0, "answered_questions": set(), "completed": False}
+        players[key] = entry
+    else:
+        answered = entry.get("answered_questions")
+        if not isinstance(answered, set):
+            entry["answered_questions"] = set(answered or [])
+    return entry
+
+
+def _register_team_answer(
+    team_progress: Dict[str, Any],
+    user_id: int,
+    question_id: Any,
+    *,
+    is_correct: bool,
+) -> None:
+    if question_id in (None, ""):
+        return
+
+    entry = _ensure_player_progress_entry(team_progress, user_id)
+    answered_questions: Set[str] = entry.setdefault("answered_questions", set())
+    question_key = str(question_id)
+    if question_key in answered_questions:
+        return
+
+    answered_questions.add(question_key)
+    if is_correct:
+        entry["score"] = int(entry.get("score", 0)) + 1
+
+
+def _mark_player_completed(team_progress: Dict[str, Any], user_id: int) -> bool:
+    entry = _ensure_player_progress_entry(team_progress, user_id)
+    if entry.get("completed"):
+        return False
+
+    entry["completed"] = True
+    completed: Set[str] = team_progress.setdefault("completed_members", set())
+    completed.add(str(user_id))
+    return True
+
+
+async def _upsert_team_result(
+    team_id: str,
+    quiz_id: Any,
+    score: int,
+    *,
+    time_taken: Optional[float] = None,
+) -> None:
+    payload: Dict[str, Any] = {
+        "team_id": team_id,
+        "quiz_id": quiz_id,
+        "score": score,
+    }
+    if time_taken is not None:
+        payload["time_taken"] = time_taken
+
+    existing = await _fetch_single_record(
+        "team_results",
+        {"team_id": f"eq.{team_id}", "quiz_id": f"eq.{quiz_id}"},
+        select="id",
+    )
+
+    if existing and existing.get("id"):
+        await _supabase_request(
+            "PATCH",
+            "team_results",
+            params={"id": f"eq.{existing['id']}"},
+            json_payload=payload,
+            prefer="return=representation",
+        )
+    else:
+        await _supabase_request(
+            "POST",
+            "team_results",
+            json_payload=payload,
+            prefer="return=representation",
+        )
+
+
+async def _finalize_team_if_ready(
+    match_id: str,
+    team_progress: Dict[str, Any],
+    team_id: str,
+) -> bool:
+    if team_progress.get("team_completed"):
+        return True
+
+    member_ids: Set[str] = set(team_progress.get("member_ids") or set())
+    completed_members: Set[str] = set(team_progress.get("completed_members") or set())
+
+    if not member_ids:
+        return False
+
+    if not member_ids.issubset(completed_members):
+        return False
+
+    if team_progress.get("finalizing"):
+        return bool(team_progress.get("team_completed"))
+
+    team_progress["finalizing"] = True
+    try:
+        total_score = sum(int(entry.get("score", 0)) for entry in team_progress.get("answers", {}).values())
+        team_progress["team_score"] = total_score
+
+        quiz_id = team_progress.get("quiz_id")
+        start_dt = _parse_iso_datetime(team_progress.get("team_start_time"))
+        time_taken: Optional[float] = None
+        if start_dt:
+            time_taken = max((datetime.now(timezone.utc) - start_dt).total_seconds(), 0.0)
+            team_progress["time_taken"] = time_taken
+
+        if quiz_id not in (None, ""):
+            try:
+                await _upsert_team_result(team_id, quiz_id, total_score, time_taken=time_taken)
+            except HTTPException as exc:
+                logging.warning(
+                    "Failed to store team result for %s in match %s: %s",
+                    team_id,
+                    match_id,
+                    exc.detail,
+                )
+            except Exception as exc:  # pragma: no cover - defensive logging
+                logging.exception(
+                    "Unexpected error while storing team result for %s in match %s: %s",
+                    team_id,
+                    match_id,
+                    exc,
+                )
+
+        team_progress["team_completed"] = True
+    finally:
+        team_progress.pop("finalizing", None)
+
+    return bool(team_progress.get("team_completed"))
+
+
 def _collect_match_team_statuses(teams: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], bool]:
     statuses: List[Dict[str, Any]] = []
     # матчу нужно минимум 2 команды
@@ -741,6 +956,9 @@ def _clear_team_from_caches(team: Dict[str, Any]) -> None:
     if team_id:
         TEAM_READY_CACHE.pop(team_id, None)
         QUIZ_CACHE.pop(team_id, None)
+        for match_progress in TEAM_PROGRESS_CACHE.values():
+            if isinstance(match_progress, dict):
+                match_progress.pop(team_id, None)
 
     if not match_id:
         return
@@ -753,6 +971,7 @@ def _clear_team_from_caches(team: Dict[str, Any]) -> None:
             MATCH_STATUS_CACHE.pop(match_id, None)
             MATCH_CACHE.pop(match_id, None)
             QUIZ_CACHE.pop(match_id, None)
+            TEAM_PROGRESS_CACHE.pop(match_id, None)
 
 # ------------------- ЭНДПОИНТЫ -------------------
 
@@ -1112,6 +1331,41 @@ async def match_status(match_id: str) -> JSONResponse:
     return JSONResponse(response_data)
 
 
+@app.get("/game/status/{match_id}")
+async def game_status(match_id: str, team_id: str, user_id: int) -> Dict[str, Any]:
+    normalized_team_id = _normalize_identifier(team_id)
+    if not normalized_team_id:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="team_id обязателен")
+
+    team_with_members = await _fetch_team_with_members(normalized_team_id)
+    team_match_id = _normalize_identifier(_extract_match_id(team_with_members))
+    if team_match_id and team_match_id != _normalize_identifier(match_id):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="Команда не участвует в этом матче")
+
+    member_ids = {
+        str(member.get("id"))
+        for member in team_with_members.get("members", [])
+        if member.get("id") is not None
+    }
+    if str(user_id) not in member_ids:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="Вы не состоите в этой команде")
+
+    team_progress = await _ensure_team_progress(match_id, team_with_members)
+    completed_members = len(team_progress.get("completed_members") or [])
+    total_members = len(team_progress.get("member_ids") or [])
+
+    response: Dict[str, Any] = {
+        "team_completed": bool(team_progress.get("team_completed")),
+        "team_members_completed": completed_members,
+        "team_members_total": total_members,
+    }
+
+    if response["team_completed"]:
+        response["team_score"] = team_progress.get("team_score")
+
+    return response
+
+
 @app.post("/team/leave", response_class=HTMLResponse)
 async def leave_team(request: Request) -> HTMLResponse:
     payload = await _parse_request_payload(request, LeaveTeamRequest)
@@ -1204,6 +1458,39 @@ async def game_screen(request: Request, match_id: str):
     else:
         submitted_index = 0
 
+    team_id_param = request.query_params.get("team_id")
+    user_id_param = request.query_params.get("user_id")
+
+    team_id = _normalize_identifier(team_id_param)
+    if not team_id:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="team_id обязателен для прохождения викторины")
+
+    try:
+        user_id = int(user_id_param) if user_id_param is not None else None
+    except (TypeError, ValueError):
+        user_id = None
+
+    if user_id is None:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="user_id обязателен для прохождения викторины")
+
+    team_with_members = await _fetch_team_with_members(team_id)
+    team_match_id = _normalize_identifier(_extract_match_id(team_with_members))
+    if team_match_id and team_match_id != _normalize_identifier(match_id):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="Команда не участвует в этом матче")
+
+    member_ids: Set[int] = set()
+    for member in team_with_members.get("members", []):
+        try:
+            member_ids.add(int(member.get("id")))
+        except (TypeError, ValueError):
+            continue
+
+    if user_id not in member_ids:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="Вы не состоите в этой команде")
+
+    team_progress = await _ensure_team_progress(match_id, team_with_members, quiz.get("id"))
+    _ensure_player_progress_entry(team_progress, user_id)
+
     selected_option_param = request.query_params.get("option")
 
     feedback: Optional[Dict[str, Any]] = None
@@ -1234,6 +1521,12 @@ async def game_screen(request: Request, match_id: str):
             if selected_option:
                 selected_answer_text = selected_option.get("text")
                 is_correct = bool(selected_option.get("is_correct"))
+                _register_team_answer(
+                    team_progress,
+                    user_id,
+                    answered_question.get("id"),
+                    is_correct=is_correct,
+                )
                 feedback = {
                     "message": "Правильный ответ! Отличная работа." if is_correct else "Неправильный ответ. Попробуйте следующий вопрос!",
                     "status": "success" if is_correct else "danger",
@@ -1258,10 +1551,58 @@ async def game_screen(request: Request, match_id: str):
     if not quiz_finished and questions:
         current_question = questions[next_index]
         answers = (current_question.get("options") or [])
-    elif quiz_finished:
-        team_scoreboard = await _fetch_team_scoreboard(match_id, quiz.get("id"))
-        if team_scoreboard:
-            winning_team = team_scoreboard[0]
+
+    team_members_total = len(team_progress.get("member_ids") or [])
+    team_members_completed = len(team_progress.get("completed_members") or [])
+    team_waiting_for_members = False
+    team_waiting_message: Optional[str] = None
+    team_status_poll_url: Optional[str] = None
+
+    if quiz_finished:
+        if _mark_player_completed(team_progress, user_id):
+            team_members_completed = len(team_progress.get("completed_members") or [])
+
+        team_completed = await _finalize_team_if_ready(match_id, team_progress, team_id)
+        team_waiting_for_members = not team_completed
+
+        if team_waiting_for_members:
+            team_waiting_message = (
+                "Вы завершили викторину. Ожидайте, пока все участники команды закончат, чтобы увидеть общий результат."
+            )
+            if team_members_total:
+                status_url = request.url_for("game_status", match_id=match_id)
+                query = urlencode({"team_id": team_id, "user_id": user_id})
+                team_status_poll_url = f"{status_url}?{query}" if query else str(status_url)
+        else:
+            team_scoreboard = await _fetch_team_scoreboard(match_id, quiz.get("id"))
+            team_score_value = team_progress.get("team_score")
+            if team_score_value is not None:
+                normalized_team_id = _normalize_identifier(team_id)
+                found = any(
+                    _normalize_identifier(entry.get("team_id")) == normalized_team_id
+                    for entry in team_scoreboard
+                )
+                if not found:
+                    team_scoreboard.append(
+                        {
+                            "team_id": normalized_team_id,
+                            "team_name": team_with_members.get("name") or normalized_team_id,
+                            "score": team_score_value,
+                            "time_taken": team_progress.get("time_taken"),
+                        }
+                    )
+                    team_scoreboard.sort(
+                        key=lambda item: (
+                            -(item.get("score") or 0),
+                            item.get("time_taken") if item.get("time_taken") is not None else float("inf"),
+                            item.get("team_name") or "",
+                        )
+                    )
+
+            if team_scoreboard:
+                winning_team = team_scoreboard[0]
+    else:
+        team_waiting_for_members = False
 
     context = {
         "request": request,
@@ -1280,6 +1621,13 @@ async def game_screen(request: Request, match_id: str):
         "quiz_finished": quiz_finished,
         "team_scoreboard": team_scoreboard,
         "winning_team": winning_team,
+        "team_waiting_for_members": team_waiting_for_members,
+        "team_waiting_message": team_waiting_message,
+        "team_members_total": team_members_total,
+        "team_members_completed": team_members_completed,
+        "team_status_poll_url": team_status_poll_url,
+        "team_id": team_id,
+        "current_user_id": user_id,
     }
     return templates.TemplateResponse("game.html", context)
 
