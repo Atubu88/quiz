@@ -48,7 +48,7 @@
 - `captain_id` (bigint, FK → users.telegram_id)  
 - `created_at` (timestamptz, default now())  
 - `start_time` (timestamptz)  
-
+   ready boolean DEFAULT false
 ---
 
 ### 6. team_members — участники команд

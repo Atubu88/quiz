@@ -470,10 +470,13 @@ def _extract_match_id(team: Dict[str, Any]) -> Optional[str]:
 async def _get_match_teams(
     match_id: Optional[str],
     fallback_team: Optional[Dict[str, Any]] = None,
+    prefetched_teams: Optional[List[Dict[str, Any]]] = None,
 ) -> List[Dict[str, Any]]:
     teams: List[Dict[str, Any]] = []
 
-    if match_id:
+    if prefetched_teams:
+        teams = prefetched_teams
+    elif match_id:
         try:
             teams = await _supabase_request(
                 "GET",
@@ -560,7 +563,11 @@ async def _ensure_match_started(match_id: str, teams: List[Dict[str, Any]]) -> D
     return match_entry
 
 
-async def _build_match_status_response(match_id: str, fallback_team: dict | None = None) -> dict:
+async def _build_match_status_response(
+    match_id: str,
+    fallback_team: dict | None = None,
+    prefetched_teams: Optional[List[Dict[str, Any]]] = None,
+) -> dict:
     """
     Возвращает статус матча:
     - список команд с пометкой "готова/нет"
@@ -573,7 +580,7 @@ async def _build_match_status_response(match_id: str, fallback_team: dict | None
     if not match_id:
         return {"status": "error", "message": "Не удалось определить матч"}
 
-    teams = await _get_match_teams(match_id, fallback_team)
+    teams = await _get_match_teams(match_id, fallback_team, prefetched_teams)
     statuses, all_ready = _collect_match_team_statuses(teams)
 
     cached_team_ids = MATCH_TEAM_CACHE.setdefault(match_id, set())
@@ -892,26 +899,43 @@ async def join_team(request: Request) -> HTMLResponse:
 
 @app.post("/team/start", response_class=HTMLResponse)
 async def start_team(request: Request) -> HTMLResponse:
+    # 1️⃣ Разбор данных запроса
     payload = await _parse_request_payload(request, StartTeamRequest)
     user = await _ensure_user_exists(payload.user_id)
     team = await _ensure_team_exists(payload.team_id)
 
+    # 2️⃣ Проверяем, что нажал капитан
     member = await _fetch_team_member(team["id"], user["id"])
     if not member or not member.get("is_captain"):
         raise HTTPException(status_code=403, detail="Only the captain can start the quiz")
 
     team_id = _normalize_identifier(team.get("id"))
+
+    # 3️⃣ Ставим готовность в кэше
     TEAM_READY_CACHE[team_id] = True
     team["ready"] = True
 
+    # 4️⃣ ✅ Сохраняем готовность команды в Supabase
+    try:
+        await _supabase_request(
+            "PATCH",
+            "teams",
+            params={"id": f"eq.{team_id}"},
+            json_payload={"ready": True},
+            prefer="return=representation",
+        )
+        logging.info(f"Team {team_id} marked ready in Supabase.")
+    except HTTPException as e:
+        logging.warning(f"Failed to update ready status for team {team_id}: {e.detail}")
+
+    # 5️⃣ Добавляем команду в матч
     match_id = _extract_match_id(team)
     MATCH_TEAM_CACHE.setdefault(match_id, set()).add(team_id)
 
-    # Если все команды готовы → назначаем викторину
+    # 6️⃣ Если все команды готовы — назначаем викторину
     all_ready = all(TEAM_READY_CACHE.get(tid) for tid in MATCH_TEAM_CACHE[match_id])
     if all_ready and match_id not in MATCH_QUIZ_CACHE:
         try:
-            # Берём первую викторину (или случайную, если нужно)
             quizzes = await _supabase_request("GET", "quizzes", params={"limit": 1})
             if quizzes:
                 quiz_id = quizzes[0]["id"]
@@ -923,11 +947,14 @@ async def start_team(request: Request) -> HTMLResponse:
             logging.error(f"Failed to fetch quiz for match {match_id}: {e}")
             raise HTTPException(500, "Unable to assign quiz")
 
+    # 7️⃣ Формируем ответ о состоянии матча
     match_response = await _build_match_status_response(match_id, fallback_team=team)
 
+    # 8️⃣ Если JSON-запрос — сразу отдаём JSON
     if _is_json_request(request):
         return JSONResponse(match_response)
 
+    # 9️⃣ Иначе рендерим шаблон team.html
     team_with_members = await _fetch_team_with_members(team_id)
     context = _build_team_context(
         request,
@@ -938,6 +965,7 @@ async def start_team(request: Request) -> HTMLResponse:
     )
     context["match_status"] = match_response
     return templates.TemplateResponse("team.html", context)
+
 
 
 
