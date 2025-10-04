@@ -80,29 +80,36 @@
         </div>
       {% endif %}
 
-      {% if user_is_captain %}
-  <div class="card shadow-sm mb-4">
-    <div class="card-body">
-      <h2 class="h4 mb-3">Управление игрой</h2>
-      <form id="start-game-form" action="/team/start" method="post">
-        <input type="hidden" name="user_id" value="{{ captain_id }}" />
-        <input type="hidden" name="team_id" value="{{ team.id }}" />
-        <button type="submit" class="btn btn-danger">Начать игру</button>
-      </form>
-      <div class="mt-3">
-        <h3 class="h6 text-muted">Статус игры</h3>
-        <div
-          class="border rounded p-3 bg-body-secondary"
-          id="start-game-response"
-          aria-live="polite"
-          {% if match_status %}data-initial-status="{{ match_status | tojson | escape }}"{% endif %}
-        >
-          Ожидание запроса…
+      {% set match_identifier = team.match_id or team.id %}
+      {% if user_is_captain or current_member %}
+        <div class="card shadow-sm mb-4">
+          <div class="card-body">
+            <h2 class="h4 mb-3">Управление игрой</h2>
+            {% if user_is_captain %}
+              <form id="start-game-form" action="/team/start" method="post">
+                <input type="hidden" name="user_id" value="{{ captain_id }}" />
+                <input type="hidden" name="team_id" value="{{ team.id }}" />
+                <button type="submit" class="btn btn-danger">Начать игру</button>
+              </form>
+            {% else %}
+              <p class="text-muted mb-3">Капитан запустит игру, когда все будут готовы.</p>
+            {% endif %}
+            <div class="mt-3">
+              <h3 class="h6 text-muted">Статус игры</h3>
+              <div
+                class="border rounded p-3 bg-body-secondary"
+                id="start-game-response"
+                aria-live="polite"
+                data-team-id="{{ team.id }}"
+                {% if match_identifier %}data-match-id="{{ match_identifier }}"{% endif %}
+                {% if match_status %}data-initial-status="{{ match_status | tojson | escape }}"{% endif %}
+              >
+                Ожидание запроса…
+              </div>
+            </div>
+          </div>
         </div>
-      </div>
-    </div>
-  </div>
-{% endif %}
+      {% endif %}
 
 
       {% if last_response %}
@@ -121,7 +128,30 @@
     (function () {
       const POLL_INTERVAL_MS = 4000;
       let matchPollTimer = null;
-      let currentMatchId = null;
+
+      const responseContainer = document.getElementById("start-game-response");
+      const responseDataset =
+        responseContainer && responseContainer.dataset ? responseContainer.dataset : null;
+
+      const normalizeId = (value) => {
+        if (typeof value !== "string") {
+          return null;
+        }
+
+        const trimmed = value.trim();
+        if (!trimmed) {
+          return null;
+        }
+
+        const lower = trimmed.toLowerCase();
+        if (lower === "none" || lower === "null" || lower === "undefined") {
+          return null;
+        }
+
+        return trimmed;
+      };
+
+      let currentMatchId = normalizeId(responseDataset ? responseDataset.matchId : null);
 
       const handleJsonResponse = async (response) => {
         let data = null;
@@ -175,11 +205,13 @@
       };
 
       const startGameForm = document.getElementById("start-game-form");
-      const responseContainer = document.getElementById("start-game-response");
       const teamIdInput = startGameForm
         ? startGameForm.querySelector('input[name="team_id"]')
         : null;
-      const currentTeamId = teamIdInput ? teamIdInput.value : null;
+      const datasetTeamId = normalizeId(responseDataset ? responseDataset.teamId : null);
+      const currentTeamId = normalizeId(
+        teamIdInput && teamIdInput.value ? teamIdInput.value : datasetTeamId
+      );
 
       const stopPolling = () => {
         if (matchPollTimer) {
@@ -275,6 +307,17 @@
         `;
       };
 
+      const fetchMatchStatus = async (matchId) => {
+        const normalizedId = normalizeId(matchId);
+        if (!normalizedId) {
+          return;
+        }
+
+        const pollResponse = await fetch(`/match/status/${encodeURIComponent(normalizedId)}`);
+        const pollData = await handleJsonResponse(pollResponse);
+        updateMatchStatus(pollData);
+      };
+
       const updateMatchStatus = (data) => {
         if (!responseContainer) {
           return;
@@ -288,20 +331,17 @@
         const status = data.status;
         if (status === "waiting") {
           renderWaitingStatus(responseContainer, data);
-          if (typeof data.match_id === "string" && data.match_id) {
-            if (currentMatchId !== data.match_id) {
-              currentMatchId = data.match_id;
+          const nextMatchId = normalizeId(data.match_id);
+          if (nextMatchId) {
+            if (currentMatchId !== nextMatchId) {
+              currentMatchId = nextMatchId;
               stopPolling();
             }
             if (!matchPollTimer) {
-              matchPollTimer = setInterval(async () => {
-                try {
-                  const pollResponse = await fetch(`/match/status/${encodeURIComponent(currentMatchId)}`);
-                  const pollData = await handleJsonResponse(pollResponse);
-                  updateMatchStatus(pollData);
-                } catch (error) {
+              matchPollTimer = setInterval(() => {
+                fetchMatchStatus(currentMatchId).catch((error) => {
                   console.error("Failed to poll match status", error);
-                }
+                });
               }, POLL_INTERVAL_MS);
             }
           }
@@ -337,6 +377,12 @@
           console.warn("Failed to parse initial match status", error);
         }
         delete responseContainer.dataset.initialStatus;
+      }
+
+      if (responseContainer && !initialStatusRaw && currentMatchId) {
+        fetchMatchStatus(currentMatchId).catch((error) => {
+          console.error("Failed to fetch initial match status", error);
+        });
       }
 
       if (startGameForm && responseContainer) {
