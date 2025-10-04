@@ -101,6 +101,7 @@
                 id="start-game-response"
                 aria-live="polite"
                 data-team-id="{{ team.id }}"
+                {% if current_user and current_user.id %}data-user-id="{{ current_user.id }}"{% elif captain_id %}data-user-id="{{ captain_id }}"{% endif %}
                 {% if match_identifier %}data-match-id="{{ match_identifier }}"{% endif %}
                 {% if match_status %}data-initial-status="{{ match_status | tojson | escape }}"{% endif %}
               >
@@ -152,6 +153,7 @@
       };
 
       let currentMatchId = normalizeId(responseDataset ? responseDataset.matchId : null);
+      const currentUserId = normalizeId(responseDataset ? responseDataset.userId : null);
 
       const handleJsonResponse = async (response) => {
         let data = null;
@@ -212,6 +214,25 @@
       const currentTeamId = normalizeId(
         teamIdInput && teamIdInput.value ? teamIdInput.value : datasetTeamId
       );
+
+      const buildGameRedirect = (redirect) => {
+        if (typeof redirect !== "string" || !redirect) {
+          return redirect;
+        }
+
+        try {
+          const url = new URL(redirect, window.location.origin);
+          if (currentTeamId) {
+            url.searchParams.set("team_id", currentTeamId);
+          }
+          if (currentUserId) {
+            url.searchParams.set("user_id", currentUserId);
+          }
+          return url.toString();
+        } catch (_) {
+          return redirect;
+        }
+      };
 
       const stopPolling = () => {
         if (matchPollTimer) {
@@ -350,7 +371,7 @@
           responseContainer.innerHTML = `<p class="mb-0 text-success">Все команды готовы. Переходим к игре…</p>`;
           stopPolling();
           setTimeout(() => {
-            window.location.href = data.redirect;
+            window.location.href = buildGameRedirect(data.redirect);
           }, 500);
         } else if (status === "started") {
           renderStartedStatus(responseContainer, data);
@@ -358,7 +379,7 @@
 
           if (typeof data.redirect === "string" && data.redirect) {
             setTimeout(() => {
-              window.location.href = data.redirect;
+              window.location.href = buildGameRedirect(data.redirect);
             }, 400);
           }
         } else {
