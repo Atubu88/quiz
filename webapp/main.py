@@ -1064,25 +1064,35 @@ async def get_team_of_user(user_id: int):
         return JSONResponse({}, status_code=404)
     return team
 
-
 @app.get("/game/{match_id}", response_class=HTMLResponse)
 async def game_screen(request: Request, match_id: str):
     quiz_id = MATCH_QUIZ_CACHE.get(match_id)
     if not quiz_id:
         raise HTTPException(404, detail="Quiz not found for this match")
 
-    quizzes = await _supabase_request("GET", "quizzes", params={"id": f"eq.{quiz_id}"})
+    quizzes = await _supabase_request(
+        "GET",
+        "quizzes",
+        params={
+            "id": f"eq.{quiz_id}",
+            "select": "id,title,description,questions(id,text,explanation,options(id,text,is_correct))",
+        },
+    )
     if not quizzes:
         raise HTTPException(404, detail="Quiz not found in database")
 
     quiz = quizzes[0]
-    questions = quiz.get("questions", [])
+    questions = quiz.get("questions") or []
+    current_question = questions[0] if questions else None
+    answers = (current_question.get("options") if current_question else None) or []
 
     context = {
         "request": request,
         "match_id": match_id,
         "quiz": quiz,
         "questions": questions,
+        "question": current_question,
+        "answers": answers,
     }
     return templates.TemplateResponse("game.html", context)
 
