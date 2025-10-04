@@ -470,10 +470,13 @@ def _extract_match_id(team: Dict[str, Any]) -> Optional[str]:
 async def _get_match_teams(
     match_id: Optional[str],
     fallback_team: Optional[Dict[str, Any]] = None,
+    prefetched_teams: Optional[List[Dict[str, Any]]] = None,
 ) -> List[Dict[str, Any]]:
     teams: List[Dict[str, Any]] = []
 
-    if match_id:
+    if prefetched_teams:
+        teams = prefetched_teams
+    elif match_id:
         try:
             teams = await _supabase_request(
                 "GET",
@@ -560,7 +563,11 @@ async def _ensure_match_started(match_id: str, teams: List[Dict[str, Any]]) -> D
     return match_entry
 
 
-async def _build_match_status_response(match_id: str, fallback_team: dict | None = None) -> dict:
+async def _build_match_status_response(
+    match_id: str,
+    fallback_team: dict | None = None,
+    prefetched_teams: Optional[List[Dict[str, Any]]] = None,
+) -> dict:
     """
     Возвращает статус матча:
     - список команд с пометкой "готова/нет"
@@ -573,7 +580,7 @@ async def _build_match_status_response(match_id: str, fallback_team: dict | None
     if not match_id:
         return {"status": "error", "message": "Не удалось определить матч"}
 
-    teams = await _get_match_teams(match_id, fallback_team)
+    teams = await _get_match_teams(match_id, fallback_team, prefetched_teams)
     statuses, all_ready = _collect_match_team_statuses(teams)
 
     cached_team_ids = MATCH_TEAM_CACHE.setdefault(match_id, set())
