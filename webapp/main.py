@@ -452,6 +452,38 @@ async def _load_quiz_into_cache(team_id: str) -> Dict[str, Any]:
     return quiz_payload
 
 
+async def _ensure_match_quiz_assigned(match_id: str) -> str:
+    """Return quiz id for a match, fetching it from Supabase if needed."""
+
+    quiz_id = MATCH_QUIZ_CACHE.get(match_id)
+    if quiz_id:
+        return quiz_id
+
+    try:
+        quizzes = await _supabase_request(
+            "GET",
+            "quizzes",
+            params={"limit": 1, "order": "id.asc"},
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:  # pragma: no cover - defensive logging
+        logging.error("Failed to load quiz for match %s: %s", match_id, exc)
+        raise HTTPException(500, detail="Unable to assign quiz") from exc
+
+    if not quizzes:
+        raise HTTPException(404, detail="Quiz not found in database")
+
+    quiz_id = quizzes[0].get("id")
+    if not quiz_id:
+        logging.error("Supabase returned quiz without id for match %s", match_id)
+        raise HTTPException(500, detail="Unable to assign quiz")
+
+    MATCH_QUIZ_CACHE[match_id] = quiz_id
+    logging.info("Match %s assigned quiz %s", match_id, quiz_id)
+    return quiz_id
+
+
 def _normalize_identifier(value: Any) -> Optional[str]:
     if value is None:
         return None
@@ -934,18 +966,8 @@ async def start_team(request: Request) -> HTMLResponse:
 
     # 6️⃣ Если все команды готовы — назначаем викторину
     all_ready = all(TEAM_READY_CACHE.get(tid) for tid in MATCH_TEAM_CACHE[match_id])
-    if all_ready and match_id not in MATCH_QUIZ_CACHE:
-        try:
-            quizzes = await _supabase_request("GET", "quizzes", params={"limit": 1})
-            if quizzes:
-                quiz_id = quizzes[0]["id"]
-                MATCH_QUIZ_CACHE[match_id] = quiz_id
-                logging.info(f"Match {match_id} assigned quiz {quiz_id}")
-            else:
-                raise HTTPException(404, "No quizzes found in database")
-        except Exception as e:
-            logging.error(f"Failed to fetch quiz for match {match_id}: {e}")
-            raise HTTPException(500, "Unable to assign quiz")
+    if all_ready:
+        await _ensure_match_quiz_assigned(match_id)
 
     # 7️⃣ Формируем ответ о состоянии матча
     match_response = await _build_match_status_response(match_id, fallback_team=team)
@@ -1066,9 +1088,7 @@ async def get_team_of_user(user_id: int):
 
 @app.get("/game/{match_id}", response_class=HTMLResponse)
 async def game_screen(request: Request, match_id: str):
-    quiz_id = MATCH_QUIZ_CACHE.get(match_id)
-    if not quiz_id:
-        raise HTTPException(404, detail="Quiz not found for this match")
+    quiz_id = await _ensure_match_quiz_assigned(match_id)
 
     quizzes = await _supabase_request(
         "GET",
