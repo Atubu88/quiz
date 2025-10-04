@@ -5,14 +5,53 @@
     <h2>{{ quiz.title }}</h2>
     <p>{{ quiz.description }}</p>
 
+    {% if feedback %}
+      <div class="alert alert-{{ feedback.status }}" role="alert">
+        <strong>{{ feedback.message }}</strong>
+        {% if answered_question %}
+          <div class="mt-2">
+            <div class="fw-semibold">Вопрос:</div>
+            <div>{{ answered_question.text }}</div>
+          </div>
+        {% endif %}
+        {% if selected_answer_text %}
+          <div class="mt-2">
+            <span class="fw-semibold">Ваш ответ:</span>
+            <span>{{ selected_answer_text }}</span>
+          </div>
+        {% endif %}
+        {% if explanation %}
+          <div class="mt-3">
+            <span class="fw-semibold">Объяснение:</span>
+            <div class="mt-1">{{ explanation }}</div>
+          </div>
+        {% endif %}
+      </div>
+    {% endif %}
+
     {% if question %}
       <div class="card shadow-sm mb-4">
         <div class="card-body">
-          <h4>{{ question.text }}</h4>
-          <form id="answer-form">
+          <div class="d-flex justify-content-between align-items-start mb-3">
+            <h4 class="mb-0">{{ question.text }}</h4>
+            <span class="badge text-bg-secondary">Вопрос {{ current_question_number }} из {{ total_questions }}</span>
+          </div>
+          <form
+            id="answer-form"
+            method="get"
+            action="{{ url_for('game_screen', match_id=match_id) }}"
+          >
+            <input type="hidden" name="question_index" value="{{ question_index }}" />
             {% for option in answers %}
               <div class="form-check">
-                <input class="form-check-input" type="radio" name="option" value="{{ option.id }}" id="opt{{ option.id }}">
+                <input
+                  class="form-check-input"
+                  type="radio"
+                  name="option"
+                  value="{{ option.id }}"
+                  id="opt{{ option.id }}"
+                  {% if loop.first %}required{% endif %}
+                >
                 <label class="form-check-label" for="opt{{ option.id }}">{{ option.text }}</label>
               </div>
             {% endfor %}
@@ -20,8 +59,16 @@
           </form>
         </div>
       </div>
+    {% elif total_questions == 0 %}
+      <div class="alert alert-secondary" role="alert">
+        Нет вопросов для этой викторины. Попросите организатора добавить их в Supabase.
+      </div>
     {% else %}
-      <p>Нет вопросов для этой викторины.</p>
+      <div class="alert alert-info" role="alert">
+        Викторина завершена! Вы ответили на все вопросы. Можно вернуться на
+        <a href="/team" class="alert-link">страницу команды</a>
+        или на <a href="/" class="alert-link">главную</a>.
+      </div>
     {% endif %}
   </div>
 {% endblock %}

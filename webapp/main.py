@@ -1083,8 +1083,71 @@ async def game_screen(request: Request, match_id: str):
 
     quiz = quizzes[0]
     questions = quiz.get("questions") or []
-    current_question = questions[0] if questions else None
-    answers = (current_question.get("options") if current_question else None) or []
+    total_questions = len(questions)
+
+    raw_question_index = request.query_params.get("question_index")
+    try:
+        submitted_index = int(raw_question_index) if raw_question_index is not None else 0
+    except (TypeError, ValueError):
+        submitted_index = 0
+
+    if total_questions:
+        submitted_index = max(0, min(submitted_index, total_questions - 1))
+    else:
+        submitted_index = 0
+
+    selected_option_param = request.query_params.get("option")
+
+    feedback: Optional[Dict[str, Any]] = None
+    explanation: Optional[str] = None
+    answered_question: Optional[Dict[str, Any]] = None
+    selected_answer_text: Optional[str] = None
+
+    next_index = submitted_index
+
+    if selected_option_param is not None:
+        if not questions:
+            feedback = {
+                "message": "Для этой викторины пока нет вопросов.",
+                "status": "warning",
+                "is_correct": False,
+            }
+        else:
+            answered_question = questions[submitted_index]
+            selected_option = next(
+                (
+                    option
+                    for option in answered_question.get("options") or []
+                    if str(option.get("id")) == str(selected_option_param)
+                ),
+                None,
+            )
+
+            if selected_option:
+                selected_answer_text = selected_option.get("text")
+                is_correct = bool(selected_option.get("is_correct"))
+                feedback = {
+                    "message": "Правильный ответ! Отличная работа." if is_correct else "Неправильный ответ. Попробуйте следующий вопрос!",
+                    "status": "success" if is_correct else "danger",
+                    "is_correct": is_correct,
+                }
+                explanation = answered_question.get("explanation")
+            else:
+                feedback = {
+                    "message": "Не удалось определить выбранный вариант ответа.",
+                    "status": "warning",
+                    "is_correct": False,
+                }
+
+        next_index = min(submitted_index + 1, total_questions)
+
+    quiz_finished = total_questions == 0 or next_index >= total_questions
+    current_question: Optional[Dict[str, Any]] = None
+    answers: List[Dict[str, Any]] = []
+
+    if not quiz_finished and questions:
+        current_question = questions[next_index]
+        answers = (current_question.get("options") or [])
 
     context = {
         "request": request,
@@ -1093,6 +1156,14 @@ async def game_screen(request: Request, match_id: str):
         "questions": questions,
         "question": current_question,
         "answers": answers,
+        "question_index": next_index,
+        "total_questions": total_questions,
+        "current_question_number": next_index + 1 if current_question else total_questions,
+        "feedback": feedback,
+        "answered_question": answered_question,
+        "selected_answer_text": selected_answer_text,
+        "explanation": explanation,
+        "quiz_finished": quiz_finished,
     }
     return templates.TemplateResponse("game.html", context)
 
