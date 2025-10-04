@@ -597,6 +597,7 @@ async def _build_match_status_response(match_id: str, fallback_team: dict | None
     response: dict[str, Any] = {
         "status": "ready" if all_ready else "waiting",
         "teams": response_teams,
+        "match_id": match_id,
     }
 
     if all_ready:
