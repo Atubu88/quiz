@@ -14,7 +14,7 @@ import secrets
 import string
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Type, TypeVar
+from typing import Any, Dict, List, Optional, Set, Tuple, Type, TypeVar
 from urllib.parse import parse_qs
 
 import httpx
@@ -39,6 +39,10 @@ if not SUPABASE_URL or not SUPABASE_API_KEY:
     raise RuntimeError("SUPABASE_URL and SUPABASE_API_KEY must be configured.")
 
 QUIZ_CACHE: dict[str, dict[str, Any]] = {}
+MATCH_CACHE: dict[str, Dict[str, Any]] = {}
+MATCH_STATUS_CACHE: dict[str, Dict[str, Any]] = {}
+MATCH_TEAM_CACHE: dict[str, Set[str]] = {}
+TEAM_READY_CACHE: dict[str, bool] = {}
 
 app = FastAPI(title="Quiz Mini App")
 
@@ -78,6 +82,11 @@ class DeleteTeamRequest(BaseModel):
 
 
 # ------------------- ВСПОМОГАТЕЛЬНЫЕ -------------------
+_matches_ready: dict[str, list[str]] = {}
+
+# Кэш для матчей и их викторин
+MATCH_QUIZ_CACHE: dict[str, str] = {}
+
 
 def _build_supabase_headers(prefer: Optional[str] = None) -> Dict[str, str]:
     headers = {
@@ -443,6 +452,185 @@ async def _load_quiz_into_cache(team_id: str) -> Dict[str, Any]:
     return quiz_payload
 
 
+def _normalize_identifier(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value
+    return str(value)
+
+
+def _extract_match_id(team: Dict[str, Any]) -> Optional[str]:
+    match_id = team.get("match_id")
+    if isinstance(match_id, str) and match_id:
+        return match_id
+    return _normalize_identifier(team.get("id"))
+
+
+async def _get_match_teams(
+    match_id: Optional[str],
+    fallback_team: Optional[Dict[str, Any]] = None,
+) -> List[Dict[str, Any]]:
+    teams: List[Dict[str, Any]] = []
+
+    if match_id:
+        try:
+            teams = await _supabase_request(
+                "GET",
+                "teams",
+                params={
+                    "match_id": f"eq.{match_id}",
+                    "select": "id,name,ready,match_id",
+                },
+            ) or []
+        except HTTPException as exc:
+            logging.info("Failed to fetch teams for match %s: %s", match_id, exc.detail)
+            teams = []
+
+    if not teams and fallback_team:
+        teams = [fallback_team]
+
+    return teams
+
+
+def _collect_match_team_statuses(teams: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], bool]:
+    statuses: List[Dict[str, Any]] = []
+    # матчу нужно минимум 2 команды
+    all_ready = len(teams) >= 2
+
+    for team in teams:
+        team_id = _normalize_identifier(team.get("id"))
+        team_name = team.get("name")
+        cached_ready = TEAM_READY_CACHE.get(team_id) if team_id else None
+
+        if cached_ready is None:
+            ready = bool(team.get("ready"))
+            if team_id:
+                TEAM_READY_CACHE.setdefault(team_id, ready)
+        else:
+            ready = bool(cached_ready)
+
+        statuses.append({"id": team_id, "name": team_name, "ready": ready})
+
+        if not ready:
+            all_ready = False
+
+    return statuses, all_ready
+
+
+
+async def _ensure_match_started(match_id: str, teams: List[Dict[str, Any]]) -> Dict[str, Any]:
+    statuses, _ = _collect_match_team_statuses(teams)
+
+    match_entry = MATCH_CACHE.get(match_id)
+    if not match_entry:
+        quiz_payload = QUIZ_CACHE.get(match_id)
+        if quiz_payload is None:
+            quiz_payload = await _fetch_active_quiz()
+            QUIZ_CACHE[match_id] = quiz_payload
+
+        match_entry = {
+            "match_id": match_id,
+            "teams": statuses,
+            "redirect": f"/game/{match_id}",
+        }
+        MATCH_CACHE[match_id] = match_entry
+
+    else:
+        match_entry["teams"] = statuses
+
+    if "started_at" not in match_entry:
+        start_time = datetime.now(timezone.utc).isoformat()
+        match_entry["started_at"] = start_time
+
+        team_ids = [status["id"] for status in statuses if status.get("id")]
+        for team_id in team_ids:
+            try:
+                await _supabase_request(
+                    "PATCH",
+                    "teams",
+                    params={"id": f"eq.{team_id}"},
+                    json_payload={"start_time": start_time},
+                    prefer="return=representation",
+                )
+            except HTTPException as exc:
+                logging.warning("Failed to update start_time for team %s: %s", team_id, exc.detail)
+
+    match_entry["quiz"] = QUIZ_CACHE.get(match_id)
+    return match_entry
+
+
+async def _build_match_status_response(match_id: str, fallback_team: dict | None = None) -> dict:
+    """
+    Возвращает статус матча:
+    - список команд с пометкой "готова/нет"
+    - если все готовы → редирект на игру
+    """
+    # если match_id не пришёл — fallback на команду
+    if not match_id and fallback_team:
+        match_id = fallback_team.get("match_id") or fallback_team.get("id")
+
+    if not match_id:
+        return {"status": "error", "message": "Не удалось определить матч"}
+
+    # Собираем все команды, участвующие в матче
+    team_ids = list(MATCH_TEAM_CACHE.get(match_id, set()))
+
+    teams_status = []
+    all_ready = True
+
+    for tid in team_ids:
+        ready = TEAM_READY_CACHE.get(tid, False)
+        # Пытаемся подтянуть инфо о команде (название)
+        try:
+            team = await _ensure_team_exists(tid)
+            name = team.get("name", tid)
+        except Exception:
+            name = tid
+
+        # Если одна из команд не готова — флаг сбиваем
+        if not ready:
+            all_ready = False
+
+        teams_status.append({
+            "team_id": tid,
+            "name": name,
+            "ready": ready,
+            "is_yours": fallback_team and tid == fallback_team.get("id")
+        })
+
+    response = {
+        "status": "waiting" if not all_ready else "ready",
+        "teams": teams_status,
+    }
+
+    # Если все готовы → редиректим на матч
+    if all_ready and match_id:
+        response["redirect"] = f"/game/{match_id}"
+
+    return response
+
+
+def _clear_team_from_caches(team: Dict[str, Any]) -> None:
+    team_id = _normalize_identifier(team.get("id"))
+    match_id = _extract_match_id(team)
+
+    if team_id:
+        TEAM_READY_CACHE.pop(team_id, None)
+        QUIZ_CACHE.pop(team_id, None)
+
+    if not match_id:
+        return
+
+    teams = MATCH_TEAM_CACHE.get(match_id)
+    if teams and team_id:
+        teams.discard(team_id)
+        if not teams:
+            MATCH_TEAM_CACHE.pop(match_id, None)
+            MATCH_STATUS_CACHE.pop(match_id, None)
+            MATCH_CACHE.pop(match_id, None)
+            QUIZ_CACHE.pop(match_id, None)
+
 # ------------------- ЭНДПОИНТЫ -------------------
 
 @app.on_event("startup")
@@ -618,6 +806,7 @@ async def create_team(request: Request) -> HTMLResponse:
         "name": payload.team_name,
         "code": code,
         "captain_id": user["id"],  # ✅ правильный PK
+        "match_id": "demo-match",
     }
 
     # 1) Вставляем команду — пробрасываем исходные ошибки Supabase
@@ -635,6 +824,11 @@ async def create_team(request: Request) -> HTMLResponse:
         raise HTTPException(status_code=500, detail=f"Team created but no ID in response")
 
     team_id = team_data["id"]
+    normalized_team_id = _normalize_identifier(team_id)
+    TEAM_READY_CACHE[normalized_team_id] = bool(team_data.get("ready"))
+    match_id = _extract_match_id(team_data)
+    if match_id and normalized_team_id:
+        MATCH_TEAM_CACHE.setdefault(match_id, set()).add(normalized_team_id)
 
     # 2) Добавляем участника (капитана) — upsert, не падаем на дублях
     try:
@@ -702,51 +896,86 @@ async def join_team(request: Request) -> HTMLResponse:
 
 @app.post("/team/start", response_class=HTMLResponse)
 async def start_team(request: Request) -> HTMLResponse:
-    """Mark the team as started and load quiz data into cache for fast access."""
     payload = await _parse_request_payload(request, StartTeamRequest)
     user = await _ensure_user_exists(payload.user_id)
     team = await _ensure_team_exists(payload.team_id)
 
     member = await _fetch_team_member(team["id"], user["id"])
     if not member or not member.get("is_captain"):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only the captain can start the quiz")
+        raise HTTPException(status_code=403, detail="Only the captain can start the quiz")
 
-    if team.get("start_time"):
-        quiz_payload = QUIZ_CACHE.get(team["id"]) or await _load_quiz_into_cache(team["id"])
-    else:
-        start_time = datetime.now(timezone.utc).isoformat()
-        updated_team = await _supabase_request(
-            "PATCH",
-            "teams",
-            params={"id": f"eq.{team['id']}"},
-            json_payload={"start_time": start_time},
-            prefer="return=representation",
-        )
-        if isinstance(updated_team, list):
-            team = updated_team[0]
-        else:
-            team = updated_team
-        quiz_payload = await _load_quiz_into_cache(team["id"])
+    team_id = _normalize_identifier(team.get("id"))
+    TEAM_READY_CACHE[team_id] = True
+    team["ready"] = True
+
+    match_id = _extract_match_id(team)
+    MATCH_TEAM_CACHE.setdefault(match_id, set()).add(team_id)
+
+    # Если все команды готовы → назначаем викторину
+    all_ready = all(TEAM_READY_CACHE.get(tid) for tid in MATCH_TEAM_CACHE[match_id])
+    if all_ready and match_id not in MATCH_QUIZ_CACHE:
+        try:
+            # Берём первую викторину (или случайную, если нужно)
+            quizzes = await _supabase_request("GET", "quizzes", params={"limit": 1})
+            if quizzes:
+                quiz_id = quizzes[0]["id"]
+                MATCH_QUIZ_CACHE[match_id] = quiz_id
+                logging.info(f"Match {match_id} assigned quiz {quiz_id}")
+            else:
+                raise HTTPException(404, "No quizzes found in database")
+        except Exception as e:
+            logging.error(f"Failed to fetch quiz for match {match_id}: {e}")
+            raise HTTPException(500, "Unable to assign quiz")
+
+    match_response = await _build_match_status_response(match_id, fallback_team=team)
 
     if _is_json_request(request):
-        return JSONResponse({"team": team, "quiz": quiz_payload, "redirect": f"/quiz/{team['id']}"})
+        return JSONResponse(match_response)
 
-    first_question = None
-    if isinstance(quiz_payload, dict):
-        questions = quiz_payload.get("questions") or []
-        if questions:
-            first_question = questions[0]
+    team_with_members = await _fetch_team_with_members(team_id)
+    context = _build_team_context(
+        request,
+        team=team_with_members,
+        user=user,
+        member=member,
+        last_response={"team": team_with_members},
+    )
+    context["match_status"] = match_response
+    return templates.TemplateResponse("team.html", context)
 
-    context = {
-        "request": request,
-        "team": team,
-        "quiz": quiz_payload,
-        "question": first_question,
-        "answers": first_question.get("options") if isinstance(first_question, dict) else None,
-        "game_id": team.get("id"),
-        "last_response": {"team": team, "quiz": quiz_payload},
-    }
-    return templates.TemplateResponse("quiz.html", context)
+
+
+@app.get("/match/status/{match_id}")
+async def match_status(match_id: str) -> JSONResponse:
+    cached = MATCH_STATUS_CACHE.get(match_id) or {}
+    cached_teams = cached.get("teams")
+
+    prefetched_teams: Optional[List[Dict[str, Any]]] = None
+    if isinstance(cached_teams, list) and cached_teams:
+        prefetched_teams = [
+            {"id": team.get("id"), "name": team.get("name"), "ready": team.get("ready")}
+            for team in cached_teams
+            if team.get("id")
+        ]
+
+    fallback_team: Optional[Dict[str, Any]] = None
+    if not prefetched_teams:
+        try:
+            fallback_team = await _fetch_single_record("teams", {"match_id": f"eq.{match_id}"})
+        except HTTPException:
+            fallback_team = None
+        if not fallback_team:
+            try:
+                fallback_team = await _fetch_single_record("teams", {"id": f"eq.{match_id}"})
+            except HTTPException:
+                fallback_team = None
+
+    response_data = await _build_match_status_response(
+        match_id,
+        fallback_team=fallback_team,
+        prefetched_teams=prefetched_teams,
+    )
+    return JSONResponse(response_data)
 
 
 @app.post("/team/leave", response_class=HTMLResponse)
@@ -784,7 +1013,7 @@ async def delete_team(request: Request) -> HTMLResponse:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Удалять команду может только капитан")
 
     await _delete_team(team["id"])
-    QUIZ_CACHE.pop(team["id"], None)
+    _clear_team_from_caches(team)
     message = "Команда удалена."
 
     if _is_json_request(request):
@@ -812,3 +1041,34 @@ async def get_team_of_user(user_id: int):
     return team
 
 
+@app.get("/game/{match_id}", response_class=HTMLResponse)
+async def game_screen(request: Request, match_id: str):
+    quiz_id = MATCH_QUIZ_CACHE.get(match_id)
+    if not quiz_id:
+        raise HTTPException(404, detail="Quiz not found for this match")
+
+    quizzes = await _supabase_request("GET", "quizzes", params={"id": f"eq.{quiz_id}"})
+    if not quizzes:
+        raise HTTPException(404, detail="Quiz not found in database")
+
+    quiz = quizzes[0]
+    questions = quiz.get("questions", [])
+
+    context = {
+        "request": request,
+        "match_id": match_id,
+        "quiz": quiz,
+        "questions": questions,
+    }
+    return templates.TemplateResponse("game.html", context)
+
+
+def _extract_match_id(team: dict):
+    return team.get("match_id") or team.get("id")
+
+def _mark_team_ready(match_id: str, team_name: str):
+    """Отмечаем команду как готовую в кэше"""
+    if match_id not in _matches_ready:
+        _matches_ready[match_id] = []
+    if team_name not in _matches_ready[match_id]:
+        _matches_ready[match_id].append(team_name)

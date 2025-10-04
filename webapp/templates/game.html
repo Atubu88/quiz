@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <div class="container my-4">
+    <h2>{{ quiz.title }}</h2>
+    <p>{{ quiz.description }}</p>
+
+    {% if question %}
+      <div class="card shadow-sm mb-4">
+        <div class="card-body">
+          <h4>{{ question.text }}</h4>
+          <form id="answer-form">
+            {% for option in answers %}
+              <div class="form-check">
+                <input class="form-check-input" type="radio" name="option" value="{{ option.id }}" id="opt{{ option.id }}">
+                <label class="form-check-label" for="opt{{ option.id }}">{{ option.text }}</label>
+              </div>
+            {% endfor %}
+            <button type="submit" class="btn btn-primary mt-3">Ответить</button>
+          </form>
+        </div>
+      </div>
+    {% else %}
+      <p>Нет вопросов для этой викторины.</p>
+    {% endif %}
+  </div>
+{% endblock %}

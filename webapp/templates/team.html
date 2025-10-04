@@ -81,24 +81,29 @@
       {% endif %}
 
       {% if user_is_captain %}
-        <div class="card shadow-sm mb-4">
-          <div class="card-body">
-            <h2 class="h4 mb-3">Управление игрой</h2>
-            <form id="start-game-form" action="/team/start" method="post">
-              <div class="mb-3">
-                <label for="start-user" class="form-label">ID капитана</label>
-                <input type="number" class="form-control" id="start-user" name="user_id" value="{{ captain_id }}" placeholder="Введите ID" required />
-              </div>
-              <input type="hidden" name="team_id" value="{{ team.id }}" />
-              <button type="submit" class="btn btn-danger">Начать игру</button>
-            </form>
-            <div class="mt-3">
-              <h3 class="h6 text-muted">Ответ сервера</h3>
-              <pre class="bg-dark text-white p-3 rounded" id="start-game-response">Ожидание запроса…</pre>
-            </div>
-          </div>
+  <div class="card shadow-sm mb-4">
+    <div class="card-body">
+      <h2 class="h4 mb-3">Управление игрой</h2>
+      <form id="start-game-form" action="/team/start" method="post">
+        <input type="hidden" name="user_id" value="{{ captain_id }}" />
+        <input type="hidden" name="team_id" value="{{ team.id }}" />
+        <button type="submit" class="btn btn-danger">Начать игру</button>
+      </form>
+      <div class="mt-3">
+        <h3 class="h6 text-muted">Статус игры</h3>
+        <div
+          class="border rounded p-3 bg-body-secondary"
+          id="start-game-response"
+          aria-live="polite"
+          {% if match_status %}data-initial-status="{{ match_status | tojson | escape }}"{% endif %}
+        >
+          Ожидание запроса…
         </div>
-      {% endif %}
+      </div>
+    </div>
+  </div>
+{% endif %}
+
 
       {% if last_response %}
         <div class="alert alert-info" role="alert">
@@ -114,13 +119,17 @@
   {{ super() }}
   <script>
     (function () {
+      const POLL_INTERVAL_MS = 4000;
+      let matchPollTimer = null;
+      let currentMatchId = null;
+
       const handleJsonResponse = async (response) => {
         let data = null;
         try {
           data = await response.json();
         } catch (_) {}
 
-        if (!response.ok || !data) {
+        if (!response.ok || data === null) {
           const detail = data && data.detail;
           const message =
             (typeof detail === "string" && detail) ||
@@ -143,12 +152,197 @@
         return payload;
       };
 
+      const escapeHtml = (value) => {
+        if (value === undefined || value === null) {
+          return "";
+        }
+        return String(value).replace(/[&<>"']/g, (char) => {
+          switch (char) {
+            case "&":
+              return "&amp;";
+            case "<":
+              return "&lt;";
+            case ">":
+              return "&gt;";
+            case '"':
+              return "&quot;";
+            case "'":
+              return "&#39;";
+            default:
+              return char;
+          }
+        });
+      };
+
       const startGameForm = document.getElementById("start-game-form");
       const responseContainer = document.getElementById("start-game-response");
+      const teamIdInput = startGameForm
+        ? startGameForm.querySelector('input[name="team_id"]')
+        : null;
+      const currentTeamId = teamIdInput ? teamIdInput.value : null;
+
+      const stopPolling = () => {
+        if (matchPollTimer) {
+          clearInterval(matchPollTimer);
+          matchPollTimer = null;
+        }
+      };
+
+      const renderError = (message) => {
+        if (!responseContainer) {
+          return;
+        }
+        responseContainer.innerHTML = `<p class="mb-0 text-danger">${escapeHtml(message)}</p>`;
+      };
+
+      const formatTeamName = (team) => {
+        if (!team) {
+          return escapeHtml("Команда");
+        }
+        const fallback = team.id ? `Команда ${team.id}` : "Команда";
+        return escapeHtml(team.name || fallback);
+      };
+
+      const renderWaitingStatus = (container, data) => {
+        const teams = Array.isArray(data?.teams) ? data.teams : [];
+
+        if (!teams.length) {
+          container.innerHTML = `<p class="mb-0">${escapeHtml(
+            "Ожидаем подтверждение готовности команд."
+          )}</p>`;
+          return;
+        }
+
+        const waitingTeams = teams.filter((team) => !team.ready);
+        const otherWaitingNames = waitingTeams
+          .filter((team) => !currentTeamId || team.id !== currentTeamId)
+          .map((team) => formatTeamName(team));
+
+        const isCurrentTeamKnown = teams.some((team) => team.id === currentTeamId);
+        const isCurrentTeamReady = teams.some((team) => team.id === currentTeamId && team.ready);
+
+        let introHtml;
+        if (isCurrentTeamReady) {
+          if (otherWaitingNames.length) {
+            introHtml = `${escapeHtml("Ваша команда готова. Ждём ")}${otherWaitingNames.join(", ")}.`;
+          } else if (waitingTeams.length) {
+            introHtml = escapeHtml("Ваша команда готова. Ждём остальных участников.");
+          } else {
+            introHtml = escapeHtml("Ваша команда готова. Ожидаем запуск матча.");
+          }
+        } else if (isCurrentTeamKnown) {
+          introHtml = escapeHtml("Подтвердите готовность команды, чтобы начать матч.");
+        } else {
+          introHtml = escapeHtml("Ожидаем подтверждение готовности команд.");
+        }
+
+        const itemsHtml = teams
+          .map((team) => {
+            const name = formatTeamName(team);
+            const statusClass = team.ready ? "text-success" : "text-warning";
+            const statusText = team.ready ? "готова ✅" : "ждём подтверждения…";
+            const suffix = currentTeamId && team.id === currentTeamId ? " <span class=\"text-muted\">(ваша команда)</span>" : "";
+            return `<li class="mb-1"><span class="fw-semibold">${name}</span>${suffix} — <span class="${statusClass}">${escapeHtml(statusText)}</span></li>`;
+          })
+          .join("");
+
+        container.innerHTML = `
+          <p class="mb-2">${introHtml}</p>
+          <ul class="list-unstyled mb-0">${itemsHtml}</ul>
+        `;
+      };
+
+      const renderStartedStatus = (container, data) => {
+        const teams = Array.isArray(data?.teams) ? data.teams : [];
+        const summary = escapeHtml("Все команды подтвердили готовность. Перенаправляем в игру…");
+
+        if (!teams.length) {
+          container.innerHTML = `<p class="mb-0 text-success">${summary}</p>`;
+          return;
+        }
+
+        const itemsHtml = teams
+          .map((team) => {
+            const name = formatTeamName(team);
+            const suffix = currentTeamId && team.id === currentTeamId ? " <span class=\"text-muted\">(ваша команда)</span>" : "";
+            return `<li class="mb-1"><span class="fw-semibold">${name}</span>${suffix}</li>`;
+          })
+          .join("");
+
+        container.innerHTML = `
+          <p class="mb-2 text-success">${summary}</p>
+          <ul class="list-unstyled mb-0">${itemsHtml}</ul>
+        `;
+      };
+
+      const updateMatchStatus = (data) => {
+        if (!responseContainer) {
+          return;
+        }
+
+        if (!data || typeof data !== "object") {
+          renderError("Неожиданный ответ сервера.");
+          return;
+        }
+
+        const status = data.status;
+        if (status === "waiting") {
+          renderWaitingStatus(responseContainer, data);
+          if (typeof data.match_id === "string" && data.match_id) {
+            if (currentMatchId !== data.match_id) {
+              currentMatchId = data.match_id;
+              stopPolling();
+            }
+            if (!matchPollTimer) {
+              matchPollTimer = setInterval(async () => {
+                try {
+                  const pollResponse = await fetch(`/match/status/${encodeURIComponent(currentMatchId)}`);
+                  const pollData = await handleJsonResponse(pollResponse);
+                  updateMatchStatus(pollData);
+                } catch (error) {
+                  console.error("Failed to poll match status", error);
+                }
+              }, POLL_INTERVAL_MS);
+            }
+          }
+        } else if (status === "ready" && data.redirect) {
+          // 👇 добавленный блок
+          responseContainer.innerHTML = `<p class="mb-0 text-success">Все команды готовы. Переходим к игре…</p>`;
+          stopPolling();
+          setTimeout(() => {
+            window.location.href = data.redirect;
+          }, 500);
+        } else if (status === "started") {
+          renderStartedStatus(responseContainer, data);
+          stopPolling();
+
+          if (typeof data.redirect === "string" && data.redirect) {
+            setTimeout(() => {
+              window.location.href = data.redirect;
+            }, 400);
+          }
+        } else {
+          responseContainer.textContent = JSON.stringify(data, null, 2);
+        }
+      };
+
+      const initialStatusRaw = responseContainer && responseContainer.dataset
+        ? responseContainer.dataset.initialStatus
+        : null;
+      if (initialStatusRaw) {
+        try {
+          const initialStatus = JSON.parse(initialStatusRaw);
+          updateMatchStatus(initialStatus);
+        } catch (error) {
+          console.warn("Failed to parse initial match status", error);
+        }
+        delete responseContainer.dataset.initialStatus;
+      }
 
       if (startGameForm && responseContainer) {
         startGameForm.addEventListener("submit", async (event) => {
           event.preventDefault();
+          stopPolling();
           responseContainer.textContent = "Отправка запроса…";
 
           const payload = toJsonPayload(startGameForm);
@@ -163,9 +357,9 @@
             });
 
             const data = await handleJsonResponse(fetchResponse);
-            responseContainer.textContent = JSON.stringify(data, null, 2);
+            updateMatchStatus(data);
           } catch (error) {
-            responseContainer.textContent = `Ошибка: ${error.message || error}`;
+            renderError(error.message || String(error));
           }
         });
       }
