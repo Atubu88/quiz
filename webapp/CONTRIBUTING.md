@@ -41,15 +41,23 @@
 
 ---
 
-### 5. teams — команды
-- `id` (uuid, PK, default gen_random_uuid())  
-- `name` (text, not null)  
-- `code` (text, unique, not null) — короткий код для подключения  
-- `captain_id` (bigint, FK → users.telegram_id)  
-- `created_at` (timestamptz, default now())  
-- `start_time` (timestamptz)  
-   ready boolean DEFAULT false
----
+5. teams — команды
+
+id uuid, PK, default gen_random_uuid()
+
+name text, not null
+
+code text, unique, not null — короткий код для подключения
+
+captain_id bigint, FK → users.telegram_id
+
+created_at timestamptz, default now()
+
+start_time timestamptz
+
+ready boolean, default false — флаг готовности команды к игре
+
+quiz_id text — идентификатор викторины, которую проходит команда
 
 ### 6. team_members — участники команд
 - `id` (uuid, PK, default gen_random_uuid())  
