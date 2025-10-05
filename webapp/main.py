@@ -284,11 +284,11 @@ def _is_json_request(request: Request) -> bool:
     return "application/json" in request.headers.get("content-type", "").lower()
 
 
-async def _fetch_team_scoreboard(match_id: str, quiz_id: Any) -> List[Dict[str, Any]]:
-    """Возвращает таблицу результатов команд по матчу."""
+async def _fetch_team_scoreboard(match_id: str, quiz_id: Any) -> tuple[List[Dict[str, Any]], bool]:
+    """Возвращает таблицу результатов команд по матчу и признак, что все результаты готовы."""
 
     if not match_id or quiz_id in (None, ""):
-        return []
+        return [], False
 
     try:
         teams = await _supabase_request(
@@ -349,6 +349,9 @@ async def _fetch_team_scoreboard(match_id: str, quiz_id: Any) -> List[Dict[str, 
         scoreboard.append(entry)
         seen.add(team_id)
 
+    expected_team_ids = {team_id for team_id in team_lookup if team_id}
+    all_results_reported = bool(expected_team_ids) and expected_team_ids.issubset(seen)
+
     for team_id, team_name in team_lookup.items():
         if team_id in seen:
             continue
@@ -369,7 +372,7 @@ async def _fetch_team_scoreboard(match_id: str, quiz_id: Any) -> List[Dict[str, 
         )
     )
 
-    return scoreboard
+    return scoreboard, all_results_reported
 
 
 def _build_member_representation(user: Dict[str, Any], *, is_captain: bool) -> Dict[str, Any]:

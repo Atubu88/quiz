@@ -197,6 +197,8 @@ async def game_screen(request: Request, match_id: str):
     team_waiting_for_members = False
     team_waiting_message: Optional[str] = None
     team_status_poll_url: Optional[str] = None
+    waiting_for_other_teams = False
+    waiting_for_other_teams_message: Optional[str] = None
 
     if quiz_finished:
         if _mark_player_completed(team_progress, user_id):
@@ -214,33 +216,45 @@ async def game_screen(request: Request, match_id: str):
                 query = urlencode({"team_id": team_id, "user_id": user_id})
                 team_status_poll_url = f"{status_url}?{query}" if query else str(status_url)
         else:
-            team_scoreboard = await _fetch_team_scoreboard(match_id, quiz.get("id"))
-            team_score_value = team_progress.get("team_score")
-            if team_score_value is not None:
-                normalized_team_id = _normalize_identifier(team_id)
-                found = any(
-                    _normalize_identifier(entry.get("team_id")) == normalized_team_id
-                    for entry in team_scoreboard
-                )
-                if not found:
-                    team_scoreboard.append(
-                        {
-                            "team_id": normalized_team_id,
-                            "team_name": team_with_members.get("name") or normalized_team_id,
-                            "score": team_score_value,
-                            "time_taken": team_progress.get("time_taken"),
-                        }
-                    )
-                    team_scoreboard.sort(
-                        key=lambda item: (
-                            -(item.get("score") or 0),
-                            item.get("time_taken") if item.get("time_taken") is not None else float("inf"),
-                            item.get("team_name") or "",
-                        )
-                    )
+            team_scoreboard_data, all_teams_completed = await _fetch_team_scoreboard(
+                match_id, quiz.get("id")
+            )
 
-            if team_scoreboard:
-                winning_team = team_scoreboard[0]
+            if not all_teams_completed:
+                waiting_for_other_teams = True
+                waiting_for_other_teams_message = (
+                    "Ожидайте, пока все команды завершат игру, чтобы увидеть результаты."
+                )
+            else:
+                team_scoreboard = team_scoreboard_data
+                team_score_value = team_progress.get("team_score")
+                if team_score_value is not None:
+                    normalized_team_id = _normalize_identifier(team_id)
+                    found = any(
+                        _normalize_identifier(entry.get("team_id")) == normalized_team_id
+                        for entry in team_scoreboard
+                    )
+                    if not found:
+                        team_scoreboard.append(
+                            {
+                                "team_id": normalized_team_id,
+                                "team_name": team_with_members.get("name") or normalized_team_id,
+                                "score": team_score_value,
+                                "time_taken": team_progress.get("time_taken"),
+                            }
+                        )
+                        team_scoreboard.sort(
+                            key=lambda item: (
+                                -(item.get("score") or 0),
+                                item.get("time_taken")
+                                if item.get("time_taken") is not None
+                                else float("inf"),
+                                item.get("team_name") or "",
+                            )
+                        )
+
+                if team_scoreboard:
+                    winning_team = team_scoreboard[0]
     else:
         team_waiting_for_members = False
 
@@ -266,6 +280,8 @@ async def game_screen(request: Request, match_id: str):
         "team_members_total": team_members_total,
         "team_members_completed": team_members_completed,
         "team_status_poll_url": team_status_poll_url,
+        "waiting_for_other_teams": waiting_for_other_teams,
+        "waiting_for_other_teams_message": waiting_for_other_teams_message,
         "team_id": team_id,
         "current_user_id": user_id,
     }
