@@ -108,6 +108,7 @@ async def create_team(request: Request) -> HTMLResponse:
         "code": code,
         "captain_id": user["id"],
         "match_id": "demo-match",
+        "ready": False,
     }
 
     team_response = await _supabase_request(
