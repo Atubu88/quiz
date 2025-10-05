@@ -1,4 +1,4 @@
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
@@ -9,6 +9,7 @@ from webapp.main import (
     JoinTeamRequest,
     LeaveTeamRequest,
     LoginRequest,
+    SelectQuizRequest,
     StartTeamRequest,
     _add_team_member,
     _build_team_context,
@@ -24,7 +25,11 @@ from webapp.main import (
     templates,
 )
 from webapp.services.match_service import _build_match_status_response, _ensure_match_quiz_assigned
-from webapp.services.supabase_client import _fetch_single_record, _supabase_request
+from webapp.services.supabase_client import (
+    _fetch_quiz_options,
+    _fetch_single_record,
+    _supabase_request,
+)
 from webapp.services.team_service import (
     _clear_team_from_caches,
     _ensure_team_exists,
@@ -33,7 +38,59 @@ from webapp.services.team_service import (
     _find_existing_team_for_user,
     _normalize_identifier,
 )
-from webapp.utils.cache import MATCH_TEAM_CACHE, TEAM_READY_CACHE
+from webapp.utils.cache import MATCH_QUIZ_CACHE, MATCH_TEAM_CACHE, QUIZ_CACHE, TEAM_PROGRESS_CACHE, TEAM_READY_CACHE
+
+
+async def _augment_team_context_with_quizzes(context: Dict[str, Any]) -> None:
+    team = context.get("team") or {}
+    match_id = team.get("match_id") or team.get("id")
+
+    selected_quiz_id = team.get("quiz_id")
+    if isinstance(selected_quiz_id, str) and not selected_quiz_id.strip():
+        selected_quiz_id = None
+
+    if not selected_quiz_id and match_id:
+        cached_quiz_id = MATCH_QUIZ_CACHE.get(match_id)
+        if cached_quiz_id not in (None, ""):
+            selected_quiz_id = cached_quiz_id
+
+    available_quizzes: List[Dict[str, Any]] = []
+    quiz_error: Optional[str] = None
+
+    if context.get("user_is_captain"):
+        try:
+            available_quizzes = await _fetch_quiz_options()
+        except HTTPException as exc:
+            quiz_error = exc.detail if isinstance(exc.detail, str) else "Не удалось загрузить список викторин"
+        except Exception:
+            quiz_error = "Не удалось загрузить список викторин"
+
+    selected_quiz: Optional[Dict[str, Any]] = None
+    if selected_quiz_id not in (None, ""):
+        for quiz in available_quizzes:
+            if str(quiz.get("id")) == str(selected_quiz_id):
+                selected_quiz = quiz
+                break
+        if selected_quiz is None:
+            try:
+                selected_quiz = await _fetch_single_record(
+                    "quizzes",
+                    {"id": f"eq.{selected_quiz_id}"},
+                    select="id,title",
+                )
+            except HTTPException:
+                selected_quiz = None
+
+    selected_quiz_id_str = None
+    if selected_quiz_id not in (None, ""):
+        selected_quiz_id_str = str(selected_quiz_id)
+
+    context["available_quizzes"] = available_quizzes
+    context["selected_quiz_id"] = selected_quiz_id
+    context["selected_quiz_id_str"] = selected_quiz_id_str
+    context["selected_quiz"] = selected_quiz
+    if quiz_error:
+        context["quiz_error"] = quiz_error
 
 router = APIRouter()
 
@@ -87,6 +144,7 @@ async def view_team(team_id: str, request: Request, user_id: Optional[int] = Non
         user=user,
         member=member,
     )
+    await _augment_team_context_with_quizzes(context)
     return templates.TemplateResponse("team.html", context)
 
 
@@ -147,6 +205,7 @@ async def create_team(request: Request) -> HTMLResponse:
         user=user,
         last_response={"team": team_with_members},
     )
+    await _augment_team_context_with_quizzes(context)
     return templates.TemplateResponse("team.html", context)
 
 
@@ -181,6 +240,7 @@ async def join_team(request: Request) -> HTMLResponse:
         member=member_entry or existing_member,
         last_response={"team": team_with_members, "member": member_entry or existing_member},
     )
+    await _augment_team_context_with_quizzes(context)
     return templates.TemplateResponse("team.html", context)
 
 
@@ -231,6 +291,62 @@ async def start_team(request: Request) -> HTMLResponse:
         last_response={"team": team_with_members},
     )
     context["match_status"] = match_response
+    await _augment_team_context_with_quizzes(context)
+    return templates.TemplateResponse("team.html", context)
+
+
+@router.post("/team/select-quiz", response_class=HTMLResponse)
+async def select_quiz(request: Request) -> HTMLResponse:
+    payload = await _parse_request_payload(request, SelectQuizRequest)
+    user = await _ensure_user_exists(payload.user_id)
+    team = await _ensure_team_exists(payload.team_id)
+
+    member = await _fetch_team_member(team["id"], user["id"])
+    if not member or not member.get("is_captain"):
+        raise HTTPException(status_code=403, detail="Только капитан может выбрать викторину")
+
+    normalized_team_id = _normalize_identifier(team.get("id"))
+    match_id = _extract_match_id(team)
+
+    try:
+        update_response = await _supabase_request(
+            "PATCH",
+            "teams",
+            params={"id": f"eq.{normalized_team_id}"},
+            json_payload={"quiz_id": payload.quiz_id},
+            prefer="return=representation",
+        )
+    except HTTPException:
+        raise
+
+    if isinstance(update_response, list) and update_response:
+        team = {**team, **update_response[0]}
+    elif isinstance(update_response, dict):
+        team = {**team, **update_response}
+    else:
+        team = {**team, "quiz_id": payload.quiz_id}
+
+    if match_id:
+        MATCH_QUIZ_CACHE[match_id] = payload.quiz_id
+        QUIZ_CACHE.pop(match_id, None)
+        TEAM_PROGRESS_CACHE.pop(match_id, None)
+    if normalized_team_id:
+        QUIZ_CACHE.pop(normalized_team_id, None)
+
+    team_with_members = await _fetch_team_with_members(team["id"])
+    team_with_members["quiz_id"] = team.get("quiz_id")
+
+    if _is_json_request(request):
+        return JSONResponse({"team": team_with_members, "quiz_id": payload.quiz_id})
+
+    context = _build_team_context(
+        request,
+        team=team_with_members,
+        user=user,
+        member=member,
+        last_response={"team": team_with_members, "quiz_id": payload.quiz_id},
+    )
+    await _augment_team_context_with_quizzes(context)
     return templates.TemplateResponse("team.html", context)
 
 

@@ -96,6 +96,12 @@ class DeleteTeamRequest(BaseModel):
     team_id: str
 
 
+class SelectQuizRequest(BaseModel):
+    user_id: int
+    team_id: str
+    quiz_id: int
+
+
 # ------------------- ВСПОМОГАТЕЛЬНЫЕ -------------------
 
 

@@ -75,6 +75,29 @@ async def _ensure_match_quiz_assigned(match_id: str) -> str:
         return quiz_id
 
     try:
+        teams = await _supabase_request(
+            "GET",
+            "teams",
+            params={
+                "match_id": f"eq.{match_id}",
+                "select": "id,quiz_id",
+            },
+        ) or []
+    except HTTPException:
+        raise
+    except Exception as exc:  # pragma: no cover - defensive logging
+        logging.error("Failed to load teams for match %s: %s", match_id, exc)
+        raise HTTPException(500, detail="Unable to assign quiz") from exc
+
+    for team in teams:
+        team_quiz_id = team.get("quiz_id") if isinstance(team, dict) else None
+        if team_quiz_id not in (None, ""):
+            quiz_id = team_quiz_id
+            MATCH_QUIZ_CACHE[match_id] = quiz_id
+            logging.info("Match %s reused quiz %s from team %s", match_id, quiz_id, team.get("id"))
+            return quiz_id
+
+    try:
         quizzes = await _supabase_request(
             "GET",
             "quizzes",

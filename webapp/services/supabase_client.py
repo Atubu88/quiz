@@ -90,6 +90,21 @@ async def _fetch_single_record(table: str, filters: Dict[str, str], select: str 
     return data[0] if data else None
 
 
+async def _fetch_quiz_options(select: str = "id,title") -> List[Dict[str, Any]]:
+    """Возвращает список викторин с указанными полями (по умолчанию id и title)."""
+
+    params = {"select": select, "order": "title.asc"}
+    quizzes = await _supabase_request("GET", "quizzes", params=params) or []
+    normalized: List[Dict[str, Any]] = []
+    for quiz in quizzes:
+        if not isinstance(quiz, dict):
+            continue
+        if quiz.get("id") in (None, ""):
+            continue
+        normalized.append(quiz)
+    return normalized
+
+
 async def _fetch_active_quiz() -> Dict[str, Any]:
     quiz = await _fetch_single_record("quizzes", {"is_active": "eq.true"}, select="id,title,description")
     if not quiz:
@@ -108,4 +123,9 @@ async def _fetch_active_quiz() -> Dict[str, Any]:
     return quiz
 
 
-__all__ = ["_supabase_request", "_fetch_single_record", "_fetch_active_quiz"]
+__all__ = [
+    "_supabase_request",
+    "_fetch_single_record",
+    "_fetch_active_quiz",
+    "_fetch_quiz_options",
+]
