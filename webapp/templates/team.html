@@ -87,15 +87,20 @@
             <h2 class="h4 mb-3">Управление игрой</h2>
             <div class="mb-4">
               <h3 class="h6 text-muted">Викторина</h3>
-              {% if selected_quiz %}
-                <p class="mb-2">
+              {% set has_selected_quiz = selected_quiz or selected_quiz_id %}
+              <p
+                id="quiz-selection-summary"
+                class="mb-2{% if not has_selected_quiz %} text-muted{% endif %}"
+                data-default-text="Викторина пока не выбрана."
+              >
+                {% if selected_quiz %}
                   Выбрана викторина <span class="fw-semibold">«{{ selected_quiz.title }}»</span>.
-                </p>
-              {% elif selected_quiz_id %}
-                <p class="mb-2">Выбрана викторина № {{ selected_quiz_id }}.</p>
-              {% else %}
-                <p class="mb-2 text-muted">Викторина пока не выбрана.</p>
-              {% endif %}
+                {% elif selected_quiz_id %}
+                  Выбрана викторина № {{ selected_quiz_id }}.
+                {% else %}
+                  Викторина пока не выбрана.
+                {% endif %}
+              </p>
 
               {% if quiz_error %}
                 <div class="alert alert-warning mb-3" role="alert">
@@ -105,40 +110,51 @@
 
               {% if user_is_captain %}
                 {% if available_quizzes %}
-                  <div class="list-group mb-0">
-                    {% for quiz in available_quizzes %}
-                      {% set quiz_id_str = quiz.id ~ '' %}
-                      {% set is_selected = selected_quiz_id_str and selected_quiz_id_str == quiz_id_str %}
-                      <form
-                        action="/team/select-quiz"
-                        method="post"
-                        class="list-group-item list-group-item-action"
+                  {% set selected_quiz_id_str = selected_quiz_id and (selected_quiz_id ~ '') %}
+                  <form
+                    id="select-quiz-form"
+                    action="/team/select-quiz"
+                    method="post"
+                    class="vstack gap-3"
+                  >
+                    <input type="hidden" name="team_id" value="{{ team.id }}" />
+                    <input
+                      type="hidden"
+                      name="user_id"
+                      value="{{ captain_id or (current_user.id if current_user else '') }}"
+                    />
+                    <div>
+                      <label for="team-quiz-select" class="form-label">Выберите викторину</label>
+                      <select
+                        id="team-quiz-select"
+                        name="quiz_id"
+                        class="form-select"
+                        required
                       >
-                        <input type="hidden" name="team_id" value="{{ team.id }}" />
-                        <input
-                          type="hidden"
-                          name="user_id"
-                          value="{{ captain_id or (current_user.id if current_user else '') }}"
-                        />
-                        <input type="hidden" name="quiz_id" value="{{ quiz.id }}" />
-                        <div class="d-flex flex-column flex-md-row align-items-start align-items-md-center gap-2">
-                          <div class="flex-grow-1">
-                            <span class="fw-semibold">{{ quiz.title or ('Викторина № ' ~ quiz.id) }}</span>
-                            {% if is_selected %}
-                              <span class="badge text-bg-success ms-2">Выбрано</span>
-                            {% endif %}
-                          </div>
-                          <button
-                            type="submit"
-                            class="btn btn-outline-primary btn-sm ms-md-auto"
-                            {% if is_selected %}disabled{% endif %}
+                        <option value="" disabled {% if not selected_quiz_id %}selected{% endif %}>
+                          Выберите викторину
+                        </option>
+                        {% for quiz in available_quizzes %}
+                          {% set quiz_id_str = quiz.id ~ '' %}
+                          {% set is_selected = selected_quiz_id_str and selected_quiz_id_str == quiz_id_str %}
+                          {% set quiz_title = quiz.title or ('Викторина № ' ~ quiz.id) %}
+                          <option
+                            value="{{ quiz.id }}"
+                            data-title="{{ quiz_title }}"
+                            {% if is_selected %}selected{% endif %}
                           >
-                            {% if is_selected %}Выбрано{% else %}Выбрать{% endif %}
-                          </button>
-                        </div>
-                      </form>
-                    {% endfor %}
-                  </div>
+                            {{ quiz_title }}
+                          </option>
+                        {% endfor %}
+                      </select>
+                      <div class="form-text">После выбора сохраните изменения ниже.</div>
+                    </div>
+                    <div class="d-flex flex-column flex-sm-row gap-2">
+                      <button type="submit" class="btn btn-outline-primary">
+                        Сохранить выбор
+                      </button>
+                    </div>
+                  </form>
                 {% else %}
                   <p class="text-muted mb-0">Нет доступных викторин для выбора.</p>
                 {% endif %}
@@ -264,6 +280,52 @@
           }
         });
       };
+
+      const quizSelectionSummary = document.getElementById("quiz-selection-summary");
+      const quizSelectForm = document.getElementById("select-quiz-form");
+      const quizSelect = quizSelectForm
+        ? quizSelectForm.querySelector("#team-quiz-select")
+        : null;
+
+      const updateQuizSelectionSummary = () => {
+        if (!quizSelectionSummary) {
+          return;
+        }
+
+        const defaultText = quizSelectionSummary.dataset.defaultText || "";
+
+        if (!quizSelect) {
+          if (defaultText) {
+            quizSelectionSummary.innerHTML = escapeHtml(defaultText);
+            quizSelectionSummary.classList.add("text-muted");
+          }
+          return;
+        }
+
+        const selectedOption = quizSelect.options[quizSelect.selectedIndex];
+        if (!selectedOption || !selectedOption.value) {
+          quizSelectionSummary.innerHTML = escapeHtml(defaultText);
+          quizSelectionSummary.classList.add("text-muted");
+          return;
+        }
+
+        const title =
+          selectedOption.dataset.title ||
+          selectedOption.textContent ||
+          selectedOption.value;
+        quizSelectionSummary.innerHTML =
+          'Выбрана викторина <span class="fw-semibold">«' +
+          escapeHtml(title) +
+          "»</span>.";
+        quizSelectionSummary.classList.remove("text-muted");
+      };
+
+      if (quizSelect && quizSelectionSummary) {
+        updateQuizSelectionSummary();
+        quizSelect.addEventListener("change", () => {
+          updateQuizSelectionSummary();
+        });
+      }
 
       const startGameForm = document.getElementById("start-game-form");
       const teamIdInput = startGameForm
