@@ -87,7 +87,14 @@
             </div>
           {% else %}
             {% if waiting_for_other_teams %}
-              <div class="alert alert-info" role="alert">
+              <div
+                class="alert alert-info"
+                role="alert"
+                {% if team_status_poll_url %}
+                  data-scoreboard-waiting
+                  data-team-status-url="{{ team_status_poll_url }}"
+                {% endif %}
+              >
                 {{ waiting_for_other_teams_message or "Ожидайте, пока все команды завершат игру, чтобы увидеть результаты." }}
               </div>
             {% else %}
@@ -147,20 +154,27 @@
 
 {% block scripts %}
   {{ super() }}
-  {% if team_waiting_for_members and team_status_poll_url %}
+  {% if team_status_poll_url and (team_waiting_for_members or waiting_for_other_teams) %}
     <script>
       (function () {
-        const container = document.querySelector('[data-team-progress-container]');
-        if (!container) {
+        const progressContainer = document.querySelector('[data-team-progress-container]');
+        const scoreboardContainer = document.querySelector('[data-scoreboard-waiting]');
+        const statusContainer = progressContainer || scoreboardContainer;
+
+        if (!statusContainer) {
           return;
         }
 
-        const statusUrl = container.getAttribute('data-team-status-url');
+        const statusUrl = statusContainer.getAttribute('data-team-status-url');
         if (!statusUrl) {
           return;
         }
 
-        const counter = container.querySelector('[data-team-progress-counter]');
+        const counter = progressContainer
+          ? progressContainer.querySelector('[data-team-progress-counter]')
+          : null;
+        const shouldUpdateCounter = Boolean(counter);
+        const shouldWatchScoreboard = Boolean(scoreboardContainer);
         const POLL_INTERVAL_MS = 5000;
 
         const pollStatus = async () => {
@@ -171,17 +185,21 @@
             }
 
             const data = await response.json();
-            if (data && data.team_completed) {
+            if (shouldWatchScoreboard && data && data.all_teams_completed) {
               window.location.reload();
               return;
             }
 
             if (
-              counter &&
+              shouldUpdateCounter &&
               typeof data.team_members_completed === 'number' &&
               typeof data.team_members_total === 'number'
             ) {
               counter.textContent = `${data.team_members_completed} из ${data.team_members_total}`;
+            }
+
+            if (!shouldWatchScoreboard && data && data.team_completed) {
+              window.location.reload();
             }
           } catch (error) {
             console.warn('Не удалось обновить статус команды', error);
