@@ -66,6 +66,13 @@ async def game_status(match_id: str, team_id: str, user_id: int) -> Dict[str, An
     if response["team_completed"]:
         response["team_score"] = team_progress.get("team_score")
 
+        quiz_id = team_progress.get("quiz_id")
+        if quiz_id not in (None, ""):
+            _, all_results_reported = await _fetch_team_scoreboard(match_id, quiz_id)
+            response["all_teams_completed"] = all_results_reported
+        else:
+            response["all_teams_completed"] = False
+
     return response
 
 
@@ -209,12 +216,11 @@ async def game_screen(request: Request, match_id: str):
 
         if team_waiting_for_members:
             team_waiting_message = (
-                "Вы завершили икторину. Ожидайте, пока все участники команды закончат, чтобы увидеть общий результат."
+                "Вы завершили викторину. Ожидайте, пока все участники команды закончат, чтобы увидеть общий результат."
             )
-            if team_members_total:
-                status_url = request.url_for("game_status", match_id=match_id)
-                query = urlencode({"team_id": team_id, "user_id": user_id})
-                team_status_poll_url = f"{status_url}?{query}" if query else str(status_url)
+            status_url = request.url_for("game_status", match_id=match_id)
+            query = urlencode({"team_id": team_id, "user_id": user_id})
+            team_status_poll_url = f"{status_url}?{query}" if query else str(status_url)
         else:
             team_scoreboard_data, all_teams_completed = await _fetch_team_scoreboard(
                 match_id, quiz.get("id")
@@ -225,6 +231,9 @@ async def game_screen(request: Request, match_id: str):
                 waiting_for_other_teams_message = (
                     "Ожидайте, пока все команды завершат игру, чтобы увидеть результаты."
                 )
+                status_url = request.url_for("game_status", match_id=match_id)
+                query = urlencode({"team_id": team_id, "user_id": user_id})
+                team_status_poll_url = f"{status_url}?{query}" if query else str(status_url)
             else:
                 team_scoreboard = team_scoreboard_data
                 team_score_value = team_progress.get("team_score")
