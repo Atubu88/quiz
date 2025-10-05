@@ -86,46 +86,52 @@
               {% endif %}
             </div>
           {% else %}
-            {% if winning_team %}
-              <div class="mb-4">
-                <div class="fs-4 mb-1">🏆 {{ winning_team.team_name }}</div>
-                <div class="text-secondary">💯 {{ winning_team.score }} очков</div>
+            {% if waiting_for_other_teams %}
+              <div class="alert alert-info" role="alert">
+                {{ waiting_for_other_teams_message or "Ожидайте, пока все команды завершат игру, чтобы увидеть результаты." }}
               </div>
             {% else %}
-              <p class="mb-4">Результаты команд появятся, как только организатор их опубликует.</p>
-            {% endif %}
+              {% if winning_team %}
+                <div class="mb-4">
+                  <div class="fs-4 mb-1">🏆 {{ winning_team.team_name }}</div>
+                  <div class="text-secondary">💯 {{ winning_team.score }} очков</div>
+                </div>
+              {% else %}
+                <p class="mb-4">Результаты команд появятся, как только организатор их опубликует.</p>
+              {% endif %}
 
-            {% if team_scoreboard %}
-              <div class="table-responsive">
-                <table class="table table-sm align-middle mb-0">
-                  <thead class="table-light">
-                    <tr>
-                      <th scope="col" class="text-center">Место</th>
-                      <th scope="col">Команда</th>
-                      <th scope="col" class="text-end">Очки</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {% for entry in team_scoreboard %}
-                      {% set rank = loop.index %}
-                      {% if rank == 1 %}
-                        {% set medal = "🥇" %}
-                      {% elif rank == 2 %}
-                        {% set medal = "🥈" %}
-                      {% elif rank == 3 %}
-                        {% set medal = "🥉" %}
-                      {% else %}
-                        {% set medal = "" %}
-                      {% endif %}
+              {% if team_scoreboard %}
+                <div class="table-responsive">
+                  <table class="table table-sm align-middle mb-0">
+                    <thead class="table-light">
                       <tr>
-                        <td class="text-center">{{ medal }} {{ rank }}</td>
-                        <td>{{ entry.team_name }}</td>
-                        <td class="text-end fw-semibold">{{ entry.score }}</td>
+                        <th scope="col" class="text-center">Место</th>
+                        <th scope="col">Команда</th>
+                        <th scope="col" class="text-end">Очки</th>
                       </tr>
-                    {% endfor %}
-                  </tbody>
-                </table>
-              </div>
+                    </thead>
+                    <tbody>
+                      {% for entry in team_scoreboard %}
+                        {% set rank = loop.index %}
+                        {% if rank == 1 %}
+                          {% set medal = "🥇" %}
+                        {% elif rank == 2 %}
+                          {% set medal = "🥈" %}
+                        {% elif rank == 3 %}
+                          {% set medal = "🥉" %}
+                        {% else %}
+                          {% set medal = "" %}
+                        {% endif %}
+                        <tr>
+                          <td class="text-center">{{ medal }} {{ rank }}</td>
+                          <td>{{ entry.team_name }}</td>
+                          <td class="text-end fw-semibold">{{ entry.score }}</td>
+                        </tr>
+                      {% endfor %}
+                    </tbody>
+                  </table>
+                </div>
+              {% endif %}
             {% endif %}
           {% endif %}
         </div>
