@@ -4,12 +4,36 @@
 
 {% block content %}
   {% set team = team or {} %}
+  {% set match_info = match_status or {} %}
+  {% set team_status_value = team.get('status') %}
+  {% set team_completed_value = team.get('team_completed') %}
+  {% set match_status_value = match_info.get('status') %}
+  {% set match_team_status_value = match_info.get('team_status') %}
+  {% set match_team_completed_value = match_info.get('team_completed') %}
+  {% set team_finished = (team_status_value == 'finished') or team_completed_value %}
+  {% if not team_finished and match_team_status_value == 'finished' %}
+    {% set team_finished = True %}
+  {% endif %}
+  {% if not team_finished and match_team_completed_value %}
+    {% set team_finished = True %}
+  {% endif %}
+  {% set match_finished = match_status_value == 'finished' %}
   <div class="row justify-content-center">
     <div class="col-lg-9 col-xl-8">
-      {% if match_status and match_status.status == 'finished' %}
+      {% if match_finished %}
         <div class="alert alert-success">
-          🏁 Ваша команда завершила игру!
-          <p>Результат: {{ match_status.score or '?' }} очков.</p>
+          <p class="mb-0">
+            ✅ Игра завершена.
+            {% if match_info.results_url %}
+              <a class="alert-link" href="{{ match_info.results_url }}">Посмотреть результаты</a>.
+            {% else %}
+              Посмотреть результаты.
+            {% endif %}
+          </p>
+        </div>
+      {% elif team_finished %}
+        <div class="alert alert-success">
+          <p class="mb-0">🏁 Ваша команда завершила игру. Ожидаем остальные команды...</p>
         </div>
       {% endif %}
 
@@ -93,14 +117,19 @@
               data-team-id="{{ team.id }}"
               {% if current_user and current_user.id %}data-user-id="{{ current_user.id }}"{% elif captain_id %}data-user-id="{{ captain_id }}"{% endif %}
               {% if match_identifier %}data-match-id="{{ match_identifier }}"{% endif %}
-              {% if match_status %}data-initial-status="{{ match_status | tojson | escape }}"{% endif %}
+              {% if match_info %}data-initial-status="{{ match_info | tojson | escape }}"{% endif %}
+              {% if team_status_value is not none %}data-team-status="{{ team_status_value }}"{% endif %}
+              {% if team_completed_value is not none %}data-team-completed="{{ 'true' if team_completed_value else 'false' }}"{% endif %}
+              {% if match_status_value is not none %}data-match-status="{{ match_status_value }}"{% endif %}
+              {% if match_team_status_value is not none %}data-match-team-status="{{ match_team_status_value }}"{% endif %}
+              {% if match_team_completed_value is not none %}data-match-team-completed="{{ 'true' if match_team_completed_value else 'false' }}"{% endif %}
             >
               Ожидаем данные о матче…
             </div>
           </section>
 
           <footer class="d-flex flex-column flex-md-row gap-2">
-            {% if user_is_captain and (not match_status or match_status.status in ('waiting', 'ready')) %}
+            {% if user_is_captain and (not match_info or match_status_value is none or match_status_value in ('waiting', 'ready')) %}
               <form id="start-game-form" action="/team/start" method="post" class="d-flex">
                 <input type="hidden" name="user_id" value="{{ captain_id }}" />
                 <input type="hidden" name="team_id" value="{{ team.id }}" />
@@ -108,12 +137,12 @@
               </form>
             {% endif %}
 
-            {% if match_status and match_status.status == 'finished' %}
-              {% if match_status.results_url %}
-                <a href="{{ match_status.results_url }}" class="btn btn-outline-primary">Посмотреть результаты</a>
+            {% if match_finished %}
+              {% if match_info.results_url %}
+                <a href="{{ match_info.results_url }}" class="btn btn-outline-primary">Посмотреть результаты</a>
               {% endif %}
-              {% if user_is_captain and match_status.new_game_url %}
-                <a href="{{ match_status.new_game_url }}" class="btn btn-primary">Начать новую игру</a>
+              {% if user_is_captain and match_info.new_game_url %}
+                <a href="{{ match_info.new_game_url }}" class="btn btn-primary">Начать новую игру</a>
               {% endif %}
             {% endif %}
           </footer>
@@ -163,9 +192,55 @@
       const datasetUserId = normalizeId(statusDataset ? statusDataset.userId : null);
       const datasetTeamId = normalizeId(statusDataset ? statusDataset.teamId : null);
 
+      const parseBoolean = (value) => {
+        if (value === undefined || value === null) {
+          return false;
+        }
+        if (typeof value === "boolean") {
+          return value;
+        }
+        if (typeof value === "number") {
+          return value !== 0;
+        }
+        if (typeof value === "string") {
+          const normalized = value.trim().toLowerCase();
+          if (!normalized) {
+            return false;
+          }
+          return ["true", "1", "yes", "on"].includes(normalized);
+        }
+        return false;
+      };
+
+      const normalizeStatus = (value) => {
+        const normalized = normalizeId(value);
+        return normalized ? normalized.toLowerCase() : null;
+      };
+
+      const datasetMatchStatus = normalizeStatus(statusDataset ? statusDataset.matchStatus : null);
+      const datasetTeamStatus = normalizeStatus(statusDataset ? statusDataset.teamStatus : null);
+      const datasetTeamCompleted = parseBoolean(statusDataset ? statusDataset.teamCompleted : null);
+      const datasetMatchTeamStatus = normalizeStatus(statusDataset ? statusDataset.matchTeamStatus : null);
+      const datasetMatchTeamCompleted = parseBoolean(statusDataset ? statusDataset.matchTeamCompleted : null);
+
       let currentMatchId = datasetMatchId;
       const currentUserId = datasetUserId;
       const currentTeamId = datasetTeamId;
+
+      let matchFinished = datasetMatchStatus === "finished";
+      let teamFinished =
+        datasetTeamStatus === "finished" ||
+        datasetMatchTeamStatus === "finished" ||
+        datasetTeamCompleted ||
+        datasetMatchTeamCompleted;
+
+      const markTeamFinished = () => {
+        teamFinished = true;
+      };
+
+      const markMatchFinished = () => {
+        matchFinished = true;
+      };
 
       const handleJsonResponse = async (response) => {
         let data = null;
@@ -285,6 +360,21 @@
         }
       };
 
+      const renderTeamCompletedStatus = () => {
+        if (!statusMessage) {
+          return;
+        }
+        statusMessage.innerHTML =
+          '<p class="mb-0 text-success">🏁 Ваша команда завершила игру. Ожидаем остальные команды...</p>';
+      };
+
+      const shouldRedirectToGame = (data) => {
+        if (matchFinished || teamFinished) {
+          return false;
+        }
+        return typeof data?.redirect === "string" && data.redirect;
+      };
+
       const renderWaitingStatus = (data) => {
         if (!statusMessage) {
           return;
@@ -344,14 +434,19 @@
           return;
         }
 
-        const summary = escapeHtml("Все команды готовы. Переходим к игре…");
-        statusMessage.innerHTML = `<p class="mb-0 text-success">${summary}</p>`;
-        stopPolling();
+        const shouldRedirect = shouldRedirectToGame(data);
+        const summaryText = shouldRedirect
+          ? "Все команды готовы. Переходим к игре…"
+          : "Все команды готовы. Матч готов к старту.";
+        statusMessage.innerHTML = `<p class="mb-0 text-success">${escapeHtml(summaryText)}</p>`;
 
-        if (typeof data.redirect === "string" && data.redirect) {
+        if (shouldRedirect) {
+          stopPolling();
           setTimeout(() => {
             window.location.href = buildGameRedirect(data.redirect);
           }, 500);
+        } else {
+          startPolling();
         }
       };
 
@@ -361,7 +456,11 @@
         }
 
         const teams = Array.isArray(data?.teams) ? data.teams : [];
-        const summary = escapeHtml("Все команды подтвердили готовность. Перенаправляем в игру…");
+        const shouldRedirect = shouldRedirectToGame(data);
+        const summaryText = shouldRedirect
+          ? "Все команды подтвердили готовность. Перенаправляем в игру…"
+          : "Все команды подтвердили готовность. Игра идёт.";
+        const summary = escapeHtml(summaryText);
 
         if (!teams.length) {
           statusMessage.innerHTML = `<p class="mb-0 text-success">${summary}</p>`;
@@ -380,12 +479,13 @@
           `;
         }
 
-        stopPolling();
-
-        if (typeof data.redirect === "string" && data.redirect) {
+        if (shouldRedirect) {
+          stopPolling();
           setTimeout(() => {
             window.location.href = buildGameRedirect(data.redirect);
           }, 400);
+        } else {
+          startPolling();
         }
       };
 
@@ -393,8 +493,15 @@
         if (!statusMessage) {
           return;
         }
-        const message = data && data.message ? data.message : "Матч завершён. Можно просмотреть результаты.";
-        statusMessage.innerHTML = `<p class="mb-0 text-success">${escapeHtml(message)}</p>`;
+        const resultsUrl = typeof data?.results_url === "string" && data.results_url ? data.results_url : null;
+        const baseText = escapeHtml("✅ Игра завершена.");
+        if (resultsUrl) {
+          statusMessage.innerHTML = `<p class="mb-0 text-success">${baseText} <a class="link-success fw-semibold" href="${escapeHtml(
+            resultsUrl
+          )}">Посмотреть результаты</a>.</p>`;
+        } else {
+          statusMessage.innerHTML = `<p class="mb-0 text-success">${baseText} ${escapeHtml("Посмотреть результаты.")}</p>`;
+        }
         stopPolling();
       };
 
@@ -408,25 +515,75 @@
           return;
         }
 
-        const status = data.status;
-        applyStatusHighlight(status);
+        const status = normalizeStatus(data.status);
+        const nextMatchId = normalizeId(data.match_id);
+        if (nextMatchId) {
+          if (currentMatchId !== nextMatchId) {
+            currentMatchId = nextMatchId;
+          }
+        }
+
+        if (status === "finished") {
+          markMatchFinished();
+        }
+
+        const dataTeamStatus = normalizeStatus(data.team_status || data.teamStatus);
+        const dataTeamCompleted = parseBoolean(
+          data.team_completed !== undefined ? data.team_completed : data.teamCompleted
+        );
+        if (dataTeamStatus === "finished" || dataTeamCompleted) {
+          markTeamFinished();
+        } else if (!teamFinished && Array.isArray(data.teams)) {
+          const ownTeam = data.teams.find((team) => {
+            if (!team || typeof team !== "object") {
+              return false;
+            }
+            if (team.is_yours) {
+              return true;
+            }
+            const teamId = normalizeId(team.id);
+            return Boolean(teamId && currentTeamId && teamId === currentTeamId);
+          });
+          if (ownTeam) {
+            const ownStatus = normalizeStatus(ownTeam.status || ownTeam.team_status);
+            const ownCompleted = parseBoolean(
+              ownTeam.team_completed !== undefined
+                ? ownTeam.team_completed
+                : ownTeam.completed ?? ownTeam.finished
+            );
+            if (ownStatus === "finished" || ownCompleted) {
+              markTeamFinished();
+            }
+          }
+        }
+
+        const highlightStatus = matchFinished || teamFinished ? "finished" : status;
+        if (highlightStatus) {
+          applyStatusHighlight(highlightStatus);
+        }
+
+        if (matchFinished) {
+          renderFinishedStatus(data);
+          return;
+        }
+
+        if (teamFinished) {
+          renderTeamCompletedStatus();
+          startPolling();
+          return;
+        }
 
         if (status === "waiting") {
           renderWaitingStatus(data);
-          const nextMatchId = normalizeId(data.match_id);
           if (nextMatchId) {
-            if (currentMatchId !== nextMatchId) {
-              currentMatchId = nextMatchId;
-              stopPolling();
+            if (!matchPollTimer) {
+              startPolling();
             }
-            startPolling();
           }
         } else if (status === "ready") {
           renderReadyStatus(data);
         } else if (status === "started") {
           renderStartedStatus(data);
-        } else if (status === "finished") {
-          renderFinishedStatus(data);
         } else {
           statusMessage.textContent = JSON.stringify(data, null, 2);
         }
