@@ -92,6 +92,80 @@ async def _augment_team_context_with_quizzes(context: Dict[str, Any]) -> None:
     if quiz_error:
         context["quiz_error"] = quiz_error
 
+
+def _apply_team_completion_state(context: Dict[str, Any]) -> None:
+    team = context.get("team")
+    if not isinstance(team, dict):
+        return
+
+    normalized_team_id = _normalize_identifier(team.get("id"))
+    if not normalized_team_id:
+        return
+
+    match_id = _normalize_identifier(_extract_match_id(team))
+
+    team_progress = None
+    if match_id:
+        match_progress = TEAM_PROGRESS_CACHE.get(match_id) or {}
+        candidate_progress = match_progress.get(normalized_team_id)
+        if isinstance(candidate_progress, dict):
+            team_progress = candidate_progress
+
+    if team_progress is None:
+        for match_progress in TEAM_PROGRESS_CACHE.values():
+            if not isinstance(match_progress, dict):
+                continue
+            candidate_progress = match_progress.get(normalized_team_id)
+            if isinstance(candidate_progress, dict):
+                team_progress = candidate_progress
+                if not match_id:
+                    candidate_match_id = candidate_progress.get("match_id")
+                    match_id = _normalize_identifier(candidate_match_id)
+                break
+
+    team_completed = bool(team_progress and team_progress.get("team_completed"))
+
+    if team_completed:
+        team["team_completed"] = True
+        if team.get("status") != "finished":
+            team["status"] = "finished"
+
+    match_status = context.get("match_status")
+    if not isinstance(match_status, dict):
+        if team_completed and match_status is None:
+            context["match_status"] = {"team_status": "finished", "team_completed": True}
+        return
+
+    if team_completed:
+        match_status["team_status"] = "finished"
+        match_status["team_completed"] = True
+        match_status.pop("redirect", None)
+
+    if not match_id:
+        return
+
+    match_progress_map = TEAM_PROGRESS_CACHE.get(match_id) or {}
+    relevant_team_ids = {
+        _normalize_identifier(team_entry.get("id"))
+        for team_entry in match_status.get("teams", [])
+        if isinstance(team_entry, dict) and team_entry.get("id") is not None
+    }
+
+    relevant_team_ids = {team_id for team_id in relevant_team_ids if team_id}
+
+    if not relevant_team_ids:
+        return
+
+    all_completed = True
+    for team_id in relevant_team_ids:
+        progress = match_progress_map.get(team_id)
+        if not isinstance(progress, dict) or not progress.get("team_completed"):
+            all_completed = False
+            break
+
+    if all_completed:
+        match_status["status"] = "finished"
+
 router = APIRouter()
 
 
@@ -145,6 +219,7 @@ async def view_team(team_id: str, request: Request, user_id: Optional[int] = Non
         member=member,
     )
     await _augment_team_context_with_quizzes(context)
+    _apply_team_completion_state(context)
     return templates.TemplateResponse("team.html", context)
 
 
@@ -206,6 +281,7 @@ async def create_team(request: Request) -> HTMLResponse:
         last_response={"team": team_with_members},
     )
     await _augment_team_context_with_quizzes(context)
+    _apply_team_completion_state(context)
     return templates.TemplateResponse("team.html", context)
 
 
@@ -241,6 +317,7 @@ async def join_team(request: Request) -> HTMLResponse:
         last_response={"team": team_with_members, "member": member_entry or existing_member},
     )
     await _augment_team_context_with_quizzes(context)
+    _apply_team_completion_state(context)
     return templates.TemplateResponse("team.html", context)
 
 
@@ -292,6 +369,7 @@ async def start_team(request: Request) -> HTMLResponse:
     )
     context["match_status"] = match_response
     await _augment_team_context_with_quizzes(context)
+    _apply_team_completion_state(context)
     return templates.TemplateResponse("team.html", context)
 
 
@@ -347,6 +425,7 @@ async def select_quiz(request: Request) -> HTMLResponse:
         last_response={"team": team_with_members, "quiz_id": payload.quiz_id},
     )
     await _augment_team_context_with_quizzes(context)
+    _apply_team_completion_state(context)
     return templates.TemplateResponse("team.html", context)
 
 

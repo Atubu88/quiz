@@ -9,6 +9,7 @@ from webapp.utils.cache import (
     MATCH_STATUS_CACHE,
     MATCH_TEAM_CACHE,
     MATCH_QUIZ_CACHE,
+    TEAM_PROGRESS_CACHE,
     TEAM_READY_CACHE,
 )
 
@@ -142,6 +143,16 @@ async def _build_match_status_response(
     teams = await _get_match_teams(match_id, fallback_team, prefetched_teams)
     statuses, all_ready = _collect_match_team_statuses(teams)
 
+    normalized_match_id = _normalize_identifier(match_id)
+    match_progress_map = TEAM_PROGRESS_CACHE.get(normalized_match_id or match_id) or {}
+    completed_flags: Dict[str, bool] = {}
+    for progress_team_id, progress in match_progress_map.items():
+        normalized_team_id = _normalize_identifier(progress_team_id)
+        if not normalized_team_id:
+            continue
+        if isinstance(progress, dict) and progress.get("team_completed"):
+            completed_flags[normalized_team_id] = True
+
     cached_team_ids = MATCH_TEAM_CACHE.setdefault(match_id, set())
     your_team_id = _normalize_identifier(fallback_team.get("id")) if fallback_team else None
 
@@ -151,14 +162,21 @@ async def _build_match_status_response(
         if team_id:
             cached_team_ids.add(team_id)
 
-        response_teams.append(
-            {
-                "id": team_id,
-                "name": status.get("name") or team_id,
-                "ready": bool(status.get("ready")),
-                "is_yours": bool(your_team_id and team_id == your_team_id),
-            }
-        )
+        normalized_team_id = _normalize_identifier(team_id)
+        team_completed = bool(normalized_team_id and completed_flags.get(normalized_team_id))
+
+        team_entry: dict[str, Any] = {
+            "id": team_id,
+            "name": status.get("name") or team_id,
+            "ready": bool(status.get("ready")),
+            "is_yours": bool(your_team_id and team_id == your_team_id),
+        }
+
+        if team_completed:
+            team_entry["team_completed"] = True
+            team_entry["status"] = "finished"
+
+        response_teams.append(team_entry)
 
     response: dict[str, Any] = {
         "status": "ready" if all_ready else "waiting",
@@ -166,8 +184,23 @@ async def _build_match_status_response(
         "match_id": match_id,
     }
 
-    if all_ready:
+    your_team_completed = bool(your_team_id and completed_flags.get(your_team_id))
+
+    relevant_team_ids = {status.get("id") for status in statuses if status.get("id")}
+    all_teams_completed = bool(relevant_team_ids) and all(
+        bool(completed_flags.get(_normalize_identifier(team_id))) for team_id in relevant_team_ids
+    )
+
+    if your_team_completed:
+        response["team_status"] = "finished"
+        response["team_completed"] = True
+
+    if all_teams_completed:
+        response["status"] = "finished"
+    elif all_ready and not your_team_completed:
         response["redirect"] = f"/game/{match_id}"
+    elif all_ready:
+        response["status"] = "started"
 
     MATCH_STATUS_CACHE[match_id] = response
     return response
