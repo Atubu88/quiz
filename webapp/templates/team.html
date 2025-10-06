@@ -79,8 +79,17 @@
                 <input type="hidden" name="user_id" value="{{ captain_id }}" />
                 <input type="hidden" name="team_id" value="{{ team.id }}" />
                 <div class="mb-3">
-                  {% if available_quizzes %}
-                    <select class="form-select" id="team-quiz-select" name="quiz_id" required>
+                  <select
+                    class="form-select"
+                    id="team-quiz-select"
+                    {% if available_quizzes %}
+                      name="quiz_id"
+                      required
+                    {% else %}
+                      disabled
+                    {% endif %}
+                  >
+                    {% if available_quizzes %}
                       <option value="" disabled {% if not selected_quiz_id_str %}selected{% endif %}>Выберите викторину</option>
                       {% for quiz in available_quizzes %}
                         {% set quiz_id_str = quiz.id|string %}
@@ -88,12 +97,10 @@
                           {{ quiz.title }}
                         </option>
                       {% endfor %}
-                    </select>
-                  {% else %}
-                    <select class="form-select" id="team-quiz-select" disabled>
+                    {% else %}
                       <option>Нет доступных викторин</option>
-                    </select>
-                  {% endif %}
+                    {% endif %}
+                  </select>
                 </div>
                 <button type="submit" class="btn btn-outline-primary" {% if not available_quizzes %}disabled{% endif %}>💾 Сохранить выбор</button>
               </form>
