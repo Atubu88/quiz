@@ -22,19 +22,28 @@
     <div class="col-lg-9 col-xl-8">
       <div id="match-summary-alert">
         {% if match_finished %}
+          {% set result = match_info.result or {} %}
+          {% set winner_name = result.winner_team_name or result.winnerTeamName %}
+          {% set winner_score = result.winner_team_score if result.winner_team_score is not none else result.winnerTeamScore %}
           <div class="alert alert-success">
             <p class="mb-0">
-              ✅ Игра завершена.
+              {% if winner_name and winner_score is not none %}
+                ✅ Игра завершена. Результат: команда {{ winner_name }} победила со счётом {{ winner_score }}.
+              {% elif winner_name %}
+                ✅ Игра завершена. Результат: команда {{ winner_name }} победила.
+              {% elif winner_score is not none %}
+                ✅ Игра завершена. Победный счёт: {{ winner_score }}.
+              {% else %}
+                ✅ Игра завершена.
+              {% endif %}
               {% if match_info.results_url %}
                 <a class="alert-link" href="{{ match_info.results_url }}">Посмотреть результаты</a>.
-              {% else %}
-                Посмотреть результаты.
               {% endif %}
             </p>
           </div>
         {% elif team_finished %}
           <div class="alert alert-success">
-            <p class="mb-0">🏁 Ваша команда завершила игру. Ожидаем остальные команды...</p>
+            <p class="mb-0">🏁 Ваша команда завершила игру. Ожидаем вторую команду…</p>
           </div>
         {% endif %}
       </div>
@@ -131,24 +140,6 @@
 
           <section class="mb-4">
             <h2 class="h6 text-uppercase text-muted mb-3">Текущее состояние матча</h2>
-            <div class="list-group list-group-flush mb-3" id="match-status-steps">
-              <div class="list-group-item px-0 d-flex align-items-center gap-3 text-muted" data-status-step="waiting">
-                <span class="fs-4 status-icon">⏳</span>
-                <span>Ожидание других команд</span>
-              </div>
-              <div class="list-group-item px-0 d-flex align-items-center gap-3 text-muted" data-status-step="ready">
-                <span class="fs-4 status-icon">✅</span>
-                <span>Готовы к старту</span>
-              </div>
-              <div class="list-group-item px-0 d-flex align-items-center gap-3 text-muted" data-status-step="started">
-                <span class="fs-4 status-icon">🎮</span>
-                <span>Игра идёт</span>
-              </div>
-              <div class="list-group-item px-0 d-flex align-items-center gap-3 text-muted" data-status-step="finished">
-                <span class="fs-4 status-icon">🏁</span>
-                <span>Игра завершена</span>
-              </div>
-            </div>
             {% set match_identifier = team.match_id or team.id %}
             <div
               id="match-status-message"
@@ -208,7 +199,6 @@
       const summaryContainer = document.getElementById("match-summary-alert");
       const statusMessage = document.getElementById("match-status-message");
       const statusDataset = statusMessage && statusMessage.dataset ? statusMessage.dataset : null;
-      const statusSteps = document.querySelectorAll("[data-status-step]");
 
       const normalizeId = (value) => {
         if (typeof value !== "string") return null;
@@ -306,33 +296,69 @@
 
       const renderTeamCompletedSummary = () => {
         renderSummary(
-          '<div class="alert alert-success"><p class="mb-0">🏁 Ваша команда завершила игру. Ожидаем остальные команды...</p></div>'
+          '<div class="alert alert-success"><p class="mb-0">🏁 Ваша команда завершила игру. Ожидаем вторую команду…</p></div>'
         );
       };
 
-      const renderMatchFinishedSummary = (resultsUrl) => {
-        const linkHtml =
-          typeof resultsUrl === "string" && resultsUrl
-            ? `<a class="alert-link" href="${escapeHtml(resultsUrl)}">Посмотреть результаты</a>.`
-            : `${escapeHtml("Посмотреть результаты.")}`;
-        renderSummary(
-          `<div class="alert alert-success"><p class="mb-0">✅ ${escapeHtml("Игра завершена.")} ${linkHtml}</p></div>`
-        );
-      };
+      const extractWinnerData = (data) => {
+        const result = data && typeof data === "object" ? data.result || data.result_summary || {} : {};
+        const nameRaw =
+          result.winner_team_name ??
+          result.winnerTeamName ??
+          result.winner_name ??
+          result.winnerName ??
+          null;
+        const scoreRaw =
+          result.winner_team_score ??
+          result.winnerTeamScore ??
+          result.score ??
+          null;
 
-      const applyStatusHighlight = (status) => {
-        statusSteps.forEach((step) => {
-          const key = step.dataset.statusStep;
-          const isActive = key === status;
-          step.classList.toggle("text-muted", !isActive);
-          step.classList.toggle("text-success", isActive);
-          step.classList.toggle("fw-semibold", isActive);
-          const icon = step.querySelector(".status-icon");
-          if (icon) {
-            icon.classList.toggle("opacity-50", !isActive);
-            icon.classList.toggle("text-success", isActive);
+        const winnerName = typeof nameRaw === "string" && nameRaw.trim() ? nameRaw.trim() : null;
+
+        let winnerScore = null;
+        if (scoreRaw !== undefined && scoreRaw !== null) {
+          if (typeof scoreRaw === "number" && Number.isFinite(scoreRaw)) {
+            winnerScore = String(scoreRaw);
+          } else if (typeof scoreRaw === "string") {
+            const trimmed = scoreRaw.trim();
+            if (trimmed) {
+              const numeric = Number(trimmed);
+              winnerScore = Number.isFinite(numeric) ? String(numeric) : trimmed;
+            }
           }
-        });
+        }
+
+        return { winnerName, winnerScore };
+      };
+
+      const buildFinishedText = (data) => {
+        const { winnerName, winnerScore } = extractWinnerData(data);
+        if (winnerName && winnerScore !== null) {
+          return `✅ ${escapeHtml("Игра завершена.")} ${escapeHtml("Результат:")} ${escapeHtml(
+            "команда"
+          )} ${escapeHtml(winnerName)} ${escapeHtml("победила со счётом")} ${escapeHtml(winnerScore)}.`;
+        }
+        if (winnerName) {
+          return `✅ ${escapeHtml("Игра завершена.")} ${escapeHtml("Результат:")} ${escapeHtml(
+            "команда"
+          )} ${escapeHtml(winnerName)} ${escapeHtml("победила.")}`;
+        }
+        if (winnerScore !== null) {
+          return `✅ ${escapeHtml("Игра завершена.")} ${escapeHtml("Победный счёт:")} ${escapeHtml(
+            winnerScore
+          )}.`;
+        }
+        return `✅ ${escapeHtml("Игра завершена.")}`;
+      };
+
+      const renderMatchFinishedSummary = (data) => {
+        const resultsUrl = typeof data?.results_url === "string" && data.results_url ? data.results_url : null;
+        const finishedText = buildFinishedText(data);
+        const linkHtml = resultsUrl
+          ? ` <a class="alert-link" href="${escapeHtml(resultsUrl)}">${escapeHtml("Посмотреть результаты")}</a>.`
+          : "";
+        renderSummary(`<div class="alert alert-success"><p class="mb-0">${finishedText}${linkHtml}</p></div>`);
       };
 
       const formatTeamName = (team) => {
@@ -384,7 +410,7 @@
       const renderTeamCompletedStatus = () => {
         if (!statusMessage) return;
         statusMessage.innerHTML =
-          '<p class="mb-0 text-success">🏁 Ваша команда завершила игру. Ожидаем остальные команды...</p>';
+          '<p class="mb-0 text-success">🏁 Ваша команда завершила игру. Ожидаем вторую команду…</p>';
         renderTeamCompletedSummary();
       };
 
@@ -500,13 +526,12 @@
       const renderFinishedStatus = (data) => {
         if (!statusMessage) return;
         const resultsUrl = typeof data?.results_url === "string" && data.results_url ? data.results_url : null;
-        const baseText = escapeHtml("✅ Игра завершена.");
-        if (resultsUrl) {
-          statusMessage.innerHTML = `<p class="mb-0 text-success">${baseText} <a class="link-success fw-semibold" href="${escapeHtml(resultsUrl)}">Посмотреть результаты</a>.</p>`;
-        } else {
-          statusMessage.innerHTML = `<p class="mb-0 text-success">${baseText} ${escapeHtml("Посмотреть результаты.")}</p>`;
-        }
-        renderMatchFinishedSummary(resultsUrl);
+        const finishedText = buildFinishedText(data);
+        const linkHtml = resultsUrl
+          ? ` <a class="link-success fw-semibold" href="${escapeHtml(resultsUrl)}">${escapeHtml("Посмотреть результаты")}</a>.`
+          : "";
+        statusMessage.innerHTML = `<p class="mb-0 text-success">${finishedText}${linkHtml}</p>`;
+        renderMatchFinishedSummary(data);
         stopPolling();
       };
 
@@ -528,7 +553,6 @@
 
         // 1) Матч завершён — фиксируем конечное состояние
         if (status === "finished" || matchFinished) {
-          applyStatusHighlight("finished");
           renderFinishedStatus(data);
           return;
         }
@@ -561,14 +585,6 @@
         }
 
         // 3) Подсветка: если наша команда финишировала, но матч ещё нет — показываем «Ожидание других команд»
-        let highlightStatus = status;
-        if (teamFinished && !matchFinished) {
-          highlightStatus = "waiting";
-        }
-        if (highlightStatus) {
-          applyStatusHighlight(highlightStatus);
-        }
-
         // 4) Рендер в зависимости от состояния
         if (teamFinished && !matchFinished) {
           renderTeamCompletedStatus();
@@ -611,7 +627,6 @@
               console.error("Failed to fetch match status after parse error", err);
               // Мягкий bootstrap из data-* чтобы не висеть на заглушке
               if (teamFinished && !matchFinished) {
-                applyStatusHighlight("waiting");
                 renderTeamCompletedStatus();
                 startPolling();
               }
@@ -624,7 +639,6 @@
           console.error("Failed to fetch initial match status", error);
           // Мягкий bootstrap из data-* чтобы не висеть на заглушке
           if (teamFinished && !matchFinished) {
-            applyStatusHighlight("waiting");
             renderTeamCompletedStatus();
             startPolling();
           }

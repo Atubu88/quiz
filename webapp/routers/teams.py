@@ -167,8 +167,65 @@ def _apply_team_completion_state(context: Dict[str, Any]) -> None:
     # 🏁 Если все команды действительно завершили игру
     if all_completed:
         match_status["status"] = "finished"
-        match_status["message"] = "🏁 Игра завершена"
         match_status.pop("redirect", None)
+
+        teams_lookup: Dict[str, str] = {}
+        for team_entry in match_status.get("teams", []):
+            if not isinstance(team_entry, dict):
+                continue
+            team_entry_id = _normalize_identifier(team_entry.get("id"))
+            if not team_entry_id:
+                continue
+            team_name = team_entry.get("name")
+            if isinstance(team_name, str) and team_name.strip():
+                teams_lookup[team_entry_id] = team_name
+            else:
+                teams_lookup[team_entry_id] = team_entry.get("id") or team_entry_id
+
+        scoreboard: List[Dict[str, Any]] = []
+        for tid, progress in match_progress_map.items():
+            if tid not in relevant_team_ids or not isinstance(progress, dict):
+                continue
+
+            score_raw = progress.get("team_score")
+            try:
+                score_value = int(score_raw)
+            except (TypeError, ValueError):
+                continue
+
+            entry: Dict[str, Any] = {
+                "team_id": tid,
+                "team_name": teams_lookup.get(tid, tid),
+                "score": score_value,
+                "time_taken": progress.get("time_taken"),
+            }
+            scoreboard.append(entry)
+
+        if scoreboard:
+            scoreboard.sort(
+                key=lambda item: (
+                    -(item.get("score") or 0),
+                    item.get("time_taken") if item.get("time_taken") is not None else float("inf"),
+                )
+            )
+            winner = scoreboard[0]
+            winner_name = winner.get("team_name")
+            winner_score = winner.get("score")
+            match_status["result"] = {
+                "winner_team_id": winner.get("team_id"),
+                "winner_team_name": winner_name,
+                "winner_team_score": winner_score,
+                "scoreboard": scoreboard,
+            }
+
+            if winner_name and winner_score is not None:
+                match_status["message"] = (
+                    f"✅ Игра завершена. Результат: команда {winner_name} победила со счётом {winner_score}."
+                )
+            else:
+                match_status["message"] = "✅ Игра завершена."
+        else:
+            match_status["message"] = "✅ Игра завершена."
 
     # 🟢 Сохраняем обновлённый статус
     context["match_status"] = match_status

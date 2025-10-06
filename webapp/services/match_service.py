@@ -123,6 +123,88 @@ async def _ensure_match_quiz_assigned(match_id: str) -> str:
     return quiz_id
 
 
+def _format_team_label(team: Dict[str, Any]) -> str:
+    team_name = team.get("name") if isinstance(team, dict) else None
+    if isinstance(team_name, str) and team_name.strip():
+        return team_name
+    team_id = team.get("id") if isinstance(team, dict) else None
+    if isinstance(team_id, str) and team_id.strip():
+        return team_id
+    if team_id is not None:
+        return f"Команда {team_id}"
+    return "Команда"
+
+
+async def _build_match_result_summary(match_id: str, teams: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    try:
+        quiz_id = await _ensure_match_quiz_assigned(match_id)
+    except HTTPException:
+        quiz_id = None
+
+    if quiz_id in (None, ""):
+        return None
+
+    team_lookup: Dict[str, str] = {}
+    for team in teams:
+        team_id = _normalize_identifier(team.get("id"))
+        if not team_id:
+            continue
+        team_lookup[team_id] = _format_team_label(team)
+
+    try:
+        results = await _supabase_request(
+            "GET",
+            "team_results",
+            params={
+                "quiz_id": f"eq.{quiz_id}",
+                "select": "team_id,score,time_taken",
+                "order": "score.desc,time_taken.asc",
+            },
+        ) or []
+    except HTTPException:
+        results = []
+
+    scoreboard: List[Dict[str, Any]] = []
+    for result in results:
+        team_id = _normalize_identifier(result.get("team_id"))
+        if not team_id:
+            continue
+        if team_lookup and team_id not in team_lookup:
+            continue
+
+        score_raw = result.get("score")
+        try:
+            score_value = int(score_raw)
+        except (TypeError, ValueError):
+            score_value = 0
+
+        entry: Dict[str, Any] = {
+            "team_id": team_id,
+            "team_name": team_lookup.get(team_id, team_id),
+            "score": score_value,
+            "time_taken": result.get("time_taken"),
+        }
+        scoreboard.append(entry)
+
+    if not scoreboard:
+        return None
+
+    scoreboard.sort(
+        key=lambda item: (
+            -(item.get("score") or 0),
+            item.get("time_taken") if item.get("time_taken") is not None else float("inf"),
+        )
+    )
+
+    winner = scoreboard[0]
+    return {
+        "winner_team_id": winner.get("team_id"),
+        "winner_team_name": winner.get("team_name"),
+        "winner_team_score": winner.get("score"),
+        "scoreboard": scoreboard,
+    }
+
+
 async def _build_match_status_response(
     match_id: str,
     fallback_team: dict | None = None,
@@ -197,6 +279,9 @@ async def _build_match_status_response(
 
     if all_teams_completed:
         response["status"] = "finished"
+        result_summary = await _build_match_result_summary(match_id, teams)
+        if result_summary:
+            response["result"] = result_summary
     elif all_ready and not your_team_completed:
         response["redirect"] = f"/game/{match_id}"
     elif all_ready:
