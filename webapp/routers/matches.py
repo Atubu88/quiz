@@ -17,11 +17,23 @@ async def match_status(match_id: str) -> JSONResponse:
 
     prefetched_teams: Optional[List[Dict[str, Any]]] = None
     if isinstance(cached_teams, list) and cached_teams:
-        prefetched_teams = [
-            {"id": team.get("id"), "name": team.get("name"), "ready": team.get("ready")}
-            for team in cached_teams
-            if team.get("id")
-        ]
+        prefetched_teams = []
+        for team in cached_teams:
+            team_id = team.get("id")
+            if not team_id:
+                continue
+
+            prefetched_teams.append(
+                {
+                    "id": team_id,
+                    "name": team.get("name"),
+                    "ready": team.get("ready"),
+                    "status": team.get("status") or team.get("team_status"),
+                    "team_status": team.get("team_status"),
+                    "team_completed": team.get("team_completed"),
+                    "is_yours": team.get("is_yours"),
+                }
+            )
 
     fallback_team: Optional[Dict[str, Any]] = None
     if not prefetched_teams:
