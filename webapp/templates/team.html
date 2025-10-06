@@ -162,6 +162,7 @@
               {% if match_status_value is not none %}data-match-status="{{ match_status_value }}"{% endif %}
               {% if match_team_status_value is not none %}data-match-team-status="{{ match_team_status_value }}"{% endif %}
               {% if match_team_completed_value is not none %}data-match-team-completed="{{ 'true' if match_team_completed_value else 'false' }}"{% endif %}
+              {% if match_info and match_info.results_url %}data-results-url="{{ match_info.results_url }}"{% endif %}
             >
               Ожидаем данные о матче…
             </div>
@@ -262,6 +263,13 @@
       const datasetTeamCompleted = parseBoolean(statusDataset ? statusDataset.teamCompleted : null);
       const datasetMatchTeamStatus = normalizeStatus(statusDataset ? statusDataset.matchTeamStatus : null);
       const datasetMatchTeamCompleted = parseBoolean(statusDataset ? statusDataset.matchTeamCompleted : null);
+      const datasetResultsUrl = (() => {
+        if (!statusDataset || typeof statusDataset.resultsUrl !== "string") {
+          return null;
+        }
+        const trimmed = statusDataset.resultsUrl.trim();
+        return trimmed ? trimmed : null;
+      })();
 
       let currentMatchId = datasetMatchId;
       const currentUserId = datasetUserId;
@@ -369,6 +377,37 @@
             icon.classList.toggle("text-success", isActive);
           }
         });
+      };
+
+      const applyInitialDatasetState = () => {
+        if (!statusMessage) {
+          return;
+        }
+
+        if (statusDataset && statusDataset.initialStatus) {
+          return;
+        }
+
+        if (matchFinished) {
+          applyStatusHighlight("finished");
+          renderFinishedStatus({ results_url: datasetResultsUrl });
+          return;
+        }
+
+        if (teamFinished) {
+          const highlightCandidate =
+            datasetMatchStatus || datasetMatchTeamStatus || datasetTeamStatus || "waiting";
+          applyStatusHighlight(highlightCandidate);
+          renderTeamCompletedStatus();
+          if (currentMatchId) {
+            startPolling();
+          }
+          return;
+        }
+
+        if (datasetMatchStatus) {
+          applyStatusHighlight(datasetMatchStatus);
+        }
       };
 
       const formatTeamName = (team) => {
@@ -677,6 +716,8 @@
         const pollData = await handleJsonResponse(pollResponse);
         updateMatchStatus(pollData);
       };
+
+      applyInitialDatasetState();
 
       if (statusDataset && statusDataset.initialStatus) {
         try {
