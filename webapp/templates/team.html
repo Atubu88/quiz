@@ -592,6 +592,12 @@
           markMatchFinished();
         }
 
+        if (status === "finished") {
+          applyStatusHighlight("finished");
+          renderFinishedStatus(data);
+          return;
+        }
+
         const dataTeamStatus = normalizeStatus(data.team_status || data.teamStatus);
         const dataTeamCompleted = parseBoolean(
           data.team_completed !== undefined ? data.team_completed : data.teamCompleted
@@ -628,6 +634,7 @@
         }
         if (!highlightStatus && teamFinished) {
           highlightStatus = "waiting";
+          applyStatusHighlight("waiting");
         }
         if (highlightStatus) {
           applyStatusHighlight(highlightStatus);

@@ -98,19 +98,23 @@ def _apply_team_completion_state(context: Dict[str, Any]) -> None:
     if not isinstance(team, dict):
         return
 
+    # 🟢 Получаем нормализованный идентификатор команды
     normalized_team_id = _normalize_identifier(team.get("id"))
     if not normalized_team_id:
         return
 
+    # 🟢 Определяем match_id (идентификатор матча)
     match_id = _normalize_identifier(_extract_match_id(team))
     team_progress = None
 
+    # 🟢 Пробуем найти прогресс команды в кеше
     if match_id:
         match_progress = TEAM_PROGRESS_CACHE.get(match_id) or {}
         candidate_progress = match_progress.get(normalized_team_id)
         if isinstance(candidate_progress, dict):
             team_progress = candidate_progress
 
+    # 🟢 Если не нашли — ищем по всем матчам (на случай несоответствия match_id)
     if team_progress is None:
         for match_progress in TEAM_PROGRESS_CACHE.values():
             if not isinstance(match_progress, dict):
@@ -134,11 +138,15 @@ def _apply_team_completion_state(context: Dict[str, Any]) -> None:
         match_status["team_completed"] = True
         match_status.pop("redirect", None)
 
+    # 🟢 Если match_id не найден — просто возвращаем
     if not match_id:
         context["match_status"] = match_status
         return
 
+    # 🟢 Проверяем прогресс всех команд в матче
     match_progress_map = TEAM_PROGRESS_CACHE.get(match_id) or {}
+
+    # Список ID команд, участвующих в матче
     relevant_team_ids = {
         _normalize_identifier(t.get("id"))
         for t in match_status.get("teams", [])
@@ -146,18 +154,23 @@ def _apply_team_completion_state(context: Dict[str, Any]) -> None:
     }
     relevant_team_ids = {tid for tid in relevant_team_ids if tid}
 
-    # 🟢 Проверяем: все ли команды завершили игру
-    all_completed = all(
+    # 🟢 Формируем список завершённых флагов
+    completed_flags = [
         isinstance(progress, dict) and progress.get("team_completed")
         for tid, progress in match_progress_map.items()
         if tid in relevant_team_ids
-    )
+    ]
 
+    # ⚠️ Исправление: "all([])" возвращает True, поэтому добавляем bool(completed_flags)
+    all_completed = bool(completed_flags) and all(completed_flags)
+
+    # 🏁 Если все команды действительно завершили игру
     if all_completed:
         match_status["status"] = "finished"
         match_status["message"] = "🏁 Игра завершена"
         match_status.pop("redirect", None)
 
+    # 🟢 Сохраняем обновлённый статус
     context["match_status"] = match_status
 
 
