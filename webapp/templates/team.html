@@ -20,22 +20,24 @@
   {% set match_finished = match_status_value == 'finished' %}
   <div class="row justify-content-center">
     <div class="col-lg-9 col-xl-8">
-      {% if match_finished %}
-        <div class="alert alert-success">
-          <p class="mb-0">
-            ✅ Игра завершена.
-            {% if match_info.results_url %}
-              <a class="alert-link" href="{{ match_info.results_url }}">Посмотреть результаты</a>.
-            {% else %}
-              Посмотреть результаты.
-            {% endif %}
-          </p>
-        </div>
-      {% elif team_finished %}
-        <div class="alert alert-success">
-          <p class="mb-0">🏁 Ваша команда завершила игру. Ожидаем остальные команды...</p>
-        </div>
-      {% endif %}
+      <div id="match-summary-alert">
+        {% if match_finished %}
+          <div class="alert alert-success">
+            <p class="mb-0">
+              ✅ Игра завершена.
+              {% if match_info.results_url %}
+                <a class="alert-link" href="{{ match_info.results_url }}">Посмотреть результаты</a>.
+              {% else %}
+                Посмотреть результаты.
+              {% endif %}
+            </p>
+          </div>
+        {% elif team_finished %}
+          <div class="alert alert-success">
+            <p class="mb-0">🏁 Ваша команда завершила игру. Ожидаем остальные команды...</p>
+          </div>
+        {% endif %}
+      </div>
 
       <div class="card shadow-sm">
         <div class="card-body">
@@ -203,6 +205,7 @@
       const POLL_INTERVAL_MS = 4000;
       let matchPollTimer = null;
 
+      const summaryContainer = document.getElementById("match-summary-alert");
       const statusMessage = document.getElementById("match-status-message");
       const statusDataset = statusMessage && statusMessage.dataset ? statusMessage.dataset : null;
       const statusSteps = document.querySelectorAll("[data-status-step]");
@@ -330,6 +333,29 @@
         });
       };
 
+      const renderSummary = (html) => {
+        if (!summaryContainer) {
+          return;
+        }
+        summaryContainer.innerHTML = html || "";
+      };
+
+      const renderTeamCompletedSummary = () => {
+        renderSummary(
+          '<div class="alert alert-success"><p class="mb-0">🏁 Ваша команда завершила игру. Ожидаем остальные команды...</p></div>'
+        );
+      };
+
+      const renderMatchFinishedSummary = (resultsUrl) => {
+        const linkHtml =
+          typeof resultsUrl === "string" && resultsUrl
+            ? `<a class="alert-link" href="${escapeHtml(resultsUrl)}">Посмотреть результаты</a>.`
+            : `${escapeHtml("Посмотреть результаты.")}`;
+        renderSummary(
+          `<div class="alert alert-success"><p class="mb-0">✅ ${escapeHtml("Игра завершена.")} ${linkHtml}</p></div>`
+        );
+      };
+
       const applyStatusHighlight = (status) => {
         statusSteps.forEach((step) => {
           const key = step.dataset.statusStep;
@@ -403,6 +429,7 @@
         }
         statusMessage.innerHTML =
           '<p class="mb-0 text-success">🏁 Ваша команда завершила игру. Ожидаем остальные команды...</p>';
+        renderTeamCompletedSummary();
       };
 
       const shouldRedirectToGame = (data) => {
@@ -539,6 +566,7 @@
         } else {
           statusMessage.innerHTML = `<p class="mb-0 text-success">${baseText} ${escapeHtml("Посмотреть результаты.")}</p>`;
         }
+        renderMatchFinishedSummary(resultsUrl);
         stopPolling();
       };
 
@@ -594,7 +622,13 @@
           }
         }
 
-        const highlightStatus = matchFinished || teamFinished ? "finished" : status;
+        let highlightStatus = status;
+        if (matchFinished) {
+          highlightStatus = "finished";
+        }
+        if (!highlightStatus && teamFinished) {
+          highlightStatus = "waiting";
+        }
         if (highlightStatus) {
           applyStatusHighlight(highlightStatus);
         }
