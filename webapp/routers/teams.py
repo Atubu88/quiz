@@ -1,4 +1,5 @@
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlencode
 
 from fastapi import APIRouter, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
@@ -132,17 +133,27 @@ def _apply_team_completion_state(context: Dict[str, Any]) -> None:
 
     match_status = context.get("match_status")
     if not isinstance(match_status, dict):
-        if team_completed and match_status is None:
-            context["match_status"] = {"team_status": "finished", "team_completed": True}
-        return
+        match_status = None
 
     if team_completed:
-        match_status["team_status"] = "finished"
-        match_status["team_completed"] = True
+        if match_status is None:
+            match_status = {"team_status": "finished", "team_completed": True}
+            if match_id:
+                match_status["match_id"] = match_id
+            context["match_status"] = match_status
+        else:
+            match_status["team_status"] = "finished"
+            match_status["team_completed"] = True
         match_status.pop("redirect", None)
+
+    if match_status is None:
+        return
 
     if not match_id:
         return
+
+    if match_id and not match_status.get("match_id"):
+        match_status["match_id"] = match_id
 
     match_progress_map = TEAM_PROGRESS_CACHE.get(match_id) or {}
     relevant_team_ids = {
@@ -165,6 +176,15 @@ def _apply_team_completion_state(context: Dict[str, Any]) -> None:
 
     if all_completed:
         match_status["status"] = "finished"
+        match_status.pop("redirect", None)
+
+        if match_id and normalized_team_id:
+            user = context.get("current_user") or {}
+            member = context.get("current_member") or {}
+            user_id = user.get("id") or member.get("id")
+            if user_id:
+                query = urlencode({"team_id": normalized_team_id, "user_id": user_id})
+                match_status.setdefault("results_url", f"/game/{match_id}?{query}")
 
 router = APIRouter()
 
