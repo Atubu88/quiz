@@ -673,23 +673,39 @@
           return;
         }
 
-        const pollResponse = await fetch(`/match/status/${encodeURIComponent(normalizedId)}`);
+        const pollResponse = await fetch(`/match/status/${encodeURIComponent(normalizedId)}`, {
+          credentials: "same-origin",
+        });
         const pollData = await handleJsonResponse(pollResponse);
         updateMatchStatus(pollData);
       };
 
-      if (statusDataset && statusDataset.initialStatus) {
-        try {
-          const initialStatus = JSON.parse(statusDataset.initialStatus);
-          updateMatchStatus(initialStatus);
-        } catch (error) {
-          console.warn("Failed to parse initial match status", error);
+      const requestInitialStatus = () => {
+        if (!currentMatchId) {
+          return Promise.resolve();
         }
-        delete statusMessage.dataset.initialStatus;
-      } else if (currentMatchId) {
-        fetchMatchStatus(currentMatchId).catch((error) => {
+        return fetchMatchStatus(currentMatchId).catch((error) => {
           console.error("Failed to fetch initial match status", error);
+          renderError(error.message || String(error));
         });
+      };
+
+      if (statusDataset && "initialStatus" in statusDataset) {
+        const rawInitialStatus = statusDataset.initialStatus;
+        delete statusMessage.dataset.initialStatus;
+        if (rawInitialStatus && rawInitialStatus.trim().length > 0) {
+          try {
+            const initialStatus = JSON.parse(rawInitialStatus);
+            updateMatchStatus(initialStatus);
+          } catch (error) {
+            console.warn("Failed to parse initial match status", error);
+            requestInitialStatus();
+          }
+        } else {
+          requestInitialStatus();
+        }
+      } else if (currentMatchId) {
+        requestInitialStatus();
       }
 
       const startGameForm = document.getElementById("start-game-form");
