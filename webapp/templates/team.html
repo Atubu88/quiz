@@ -73,21 +73,51 @@
 
           <section class="mb-4">
             <h2 class="h6 text-uppercase text-muted mb-2">Викторина</h2>
-            <div>
+            {% if user_is_captain %}
+              <p class="fw-semibold mb-3">🎯 Выбор викторины</p>
+              <form action="/team/select-quiz" method="post" class="mb-3">
+                <input type="hidden" name="user_id" value="{{ captain_id }}" />
+                <input type="hidden" name="team_id" value="{{ team.id }}" />
+                <div class="mb-3">
+                  {% if available_quizzes %}
+                    <select class="form-select" id="team-quiz-select" name="quiz_id" required>
+                      <option value="" disabled {% if not selected_quiz_id_str %}selected{% endif %}>Выберите викторину</option>
+                      {% for quiz in available_quizzes %}
+                        {% set quiz_id_str = quiz.id|string %}
+                        <option value="{{ quiz.id }}" {% if selected_quiz_id_str and quiz_id_str == selected_quiz_id_str %}selected{% endif %}>
+                          {{ quiz.title }}
+                        </option>
+                      {% endfor %}
+                    </select>
+                  {% else %}
+                    <select class="form-select" id="team-quiz-select" disabled>
+                      <option>Нет доступных викторин</option>
+                    </select>
+                  {% endif %}
+                </div>
+                <button type="submit" class="btn btn-outline-primary" {% if not available_quizzes %}disabled{% endif %}>💾 Сохранить выбор</button>
+              </form>
               {% if selected_quiz %}
-                <p class="mb-1">Выбрана викторина <span class="fw-semibold">«{{ selected_quiz.title }}»</span>.</p>
-                <p class="text-muted small mb-0">ID викторины: {{ selected_quiz.id }}</p>
+                <p class="mb-0">Выбрана викторина: {{ selected_quiz.title }}</p>
               {% elif selected_quiz_id %}
                 <p class="mb-0">Выбрана викторина № {{ selected_quiz_id }}.</p>
               {% else %}
                 <p class="text-muted mb-0">Викторина пока не выбрана.</p>
               {% endif %}
-              {% if quiz_error %}
-                <div class="alert alert-warning mt-3 mb-0" role="alert">
-                  {{ quiz_error }}
-                </div>
+            {% else %}
+              {% if selected_quiz %}
+                <p class="mb-0">Выбрана викторина: {{ selected_quiz.title }}</p>
+              {% elif selected_quiz_id %}
+                <p class="mb-0">Выбрана викторина № {{ selected_quiz_id }}.</p>
+              {% else %}
+                <p class="text-muted mb-0">Викторина пока не выбрана.</p>
               {% endif %}
-            </div>
+            {% endif %}
+            {% if quiz_error %}
+              <div class="alert alert-warning mt-3 mb-0" role="alert">
+                {{ quiz_error }}
+              </div>
+            {% endif %}
           </section>
 
           <section class="mb-4">
