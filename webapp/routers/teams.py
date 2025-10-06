@@ -24,7 +24,12 @@ from webapp.main import (
     _validate_init_data,
     templates,
 )
-from webapp.services.match_service import _build_match_status_response, _ensure_match_quiz_assigned
+from webapp.services.match_service import (
+    TEAM_WAITING_MESSAGE,
+    _build_match_status_response,
+    _ensure_match_quiz_assigned,
+    _summarize_match_result,
+)
 from webapp.services.supabase_client import (
     _fetch_quiz_options,
     _fetch_single_record,
@@ -164,11 +169,19 @@ def _apply_team_completion_state(context: Dict[str, Any]) -> None:
     # ⚠️ Исправление: "all([])" возвращает True, поэтому добавляем bool(completed_flags)
     all_completed = bool(completed_flags) and all(completed_flags)
 
+    summary: Optional[Dict[str, Any]] = None
+
     # 🏁 Если все команды действительно завершили игру
     if all_completed:
         match_status["status"] = "finished"
-        match_status["message"] = "🏁 Игра завершена"
+        summary = _summarize_match_result(match_status.get("teams", []), match_progress_map)
+        message = summary.get("message") if isinstance(summary, dict) else None
+        match_status["message"] = message or "✅ Игра завершена."
+        if summary:
+            match_status["result_summary"] = summary
         match_status.pop("redirect", None)
+    elif team_completed:
+        match_status["message"] = TEAM_WAITING_MESSAGE
 
     # 🟢 Сохраняем обновлённый статус
     context["match_status"] = match_status
