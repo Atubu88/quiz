@@ -103,8 +103,8 @@ def _apply_team_completion_state(context: Dict[str, Any]) -> None:
         return
 
     match_id = _normalize_identifier(_extract_match_id(team))
-
     team_progress = None
+
     if match_id:
         match_progress = TEAM_PROGRESS_CACHE.get(match_id) or {}
         candidate_progress = match_progress.get(normalized_team_id)
@@ -124,47 +124,42 @@ def _apply_team_completion_state(context: Dict[str, Any]) -> None:
                 break
 
     team_completed = bool(team_progress and team_progress.get("team_completed"))
+    match_status = context.get("match_status") or {}
 
+    # 🟢 Если команда завершила игру — обновляем статус
     if team_completed:
         team["team_completed"] = True
-        if team.get("status") != "finished":
-            team["status"] = "finished"
-
-    match_status = context.get("match_status")
-    if not isinstance(match_status, dict):
-        if team_completed and match_status is None:
-            context["match_status"] = {"team_status": "finished", "team_completed": True}
-        return
-
-    if team_completed:
+        team["status"] = "finished"
         match_status["team_status"] = "finished"
         match_status["team_completed"] = True
         match_status.pop("redirect", None)
 
     if not match_id:
+        context["match_status"] = match_status
         return
 
     match_progress_map = TEAM_PROGRESS_CACHE.get(match_id) or {}
     relevant_team_ids = {
-        _normalize_identifier(team_entry.get("id"))
-        for team_entry in match_status.get("teams", [])
-        if isinstance(team_entry, dict) and team_entry.get("id") is not None
+        _normalize_identifier(t.get("id"))
+        for t in match_status.get("teams", [])
+        if isinstance(t, dict)
     }
+    relevant_team_ids = {tid for tid in relevant_team_ids if tid}
 
-    relevant_team_ids = {team_id for team_id in relevant_team_ids if team_id}
-
-    if not relevant_team_ids:
-        return
-
-    all_completed = True
-    for team_id in relevant_team_ids:
-        progress = match_progress_map.get(team_id)
-        if not isinstance(progress, dict) or not progress.get("team_completed"):
-            all_completed = False
-            break
+    # 🟢 Проверяем: все ли команды завершили игру
+    all_completed = all(
+        isinstance(progress, dict) and progress.get("team_completed")
+        for tid, progress in match_progress_map.items()
+        if tid in relevant_team_ids
+    )
 
     if all_completed:
         match_status["status"] = "finished"
+        match_status["message"] = "🏁 Игра завершена"
+        match_status.pop("redirect", None)
+
+    context["match_status"] = match_status
+
 
 router = APIRouter()
 
