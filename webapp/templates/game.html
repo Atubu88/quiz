@@ -1,6 +1,24 @@
 {% extends "base.html" %}
 
 {% block content %}
+  <style>
+    .question-card-transition {
+      opacity: 0;
+      transform: translateY(12px);
+      transition: opacity 220ms ease, transform 220ms ease;
+    }
+
+    .question-card-transition.question-card--visible {
+      opacity: 1;
+      transform: translateY(0);
+    }
+
+    .question-card-transition.question-card--leaving {
+      opacity: 0;
+      transform: translateY(-12px);
+    }
+  </style>
+
   <div class="container mt-0 mb-1 pt-0" style="margin-top: -0.5rem;">
     <h2 class="mb-2 fs-5 text-center">{{ quiz.title }}</h2>
     <hr class="my-2">
@@ -31,7 +49,7 @@
     {% endif %}
 
     {% if question %}
-      <div class="card shadow-sm mb-4">
+      <div class="card shadow-sm mb-4 question-card-transition" data-question-card>
         <div class="card-body">
           <div class="d-flex justify-content-between align-items-start mb-3">
             <h4 class="mb-0">{{ question.text }}</h4>
@@ -155,6 +173,48 @@
 
 {% block scripts %}
   {{ super() }}
+  <script>
+    (function () {
+      const questionCard = document.querySelector('[data-question-card]');
+      if (!questionCard) {
+        return;
+      }
+
+      window.requestAnimationFrame(() => {
+        questionCard.classList.add('question-card--visible');
+      });
+
+      const form = questionCard.querySelector('form');
+      if (!form) {
+        return;
+      }
+
+      let isSubmitting = false;
+
+      form.addEventListener('submit', (event) => {
+        if (isSubmitting) {
+          return;
+        }
+
+        event.preventDefault();
+
+        questionCard.classList.remove('question-card--visible');
+        questionCard.classList.add('question-card--leaving');
+
+        const handleTransitionEnd = (transitionEvent) => {
+          if (transitionEvent.target !== questionCard || transitionEvent.propertyName !== 'opacity') {
+            return;
+          }
+
+          questionCard.removeEventListener('transitionend', handleTransitionEnd);
+          isSubmitting = true;
+          form.submit();
+        };
+
+        questionCard.addEventListener('transitionend', handleTransitionEnd);
+      });
+    })();
+  </script>
   {% if team_status_poll_url and (team_waiting_for_members or waiting_for_other_teams) %}
     <script>
       (function () {
