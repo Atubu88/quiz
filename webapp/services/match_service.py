@@ -14,6 +14,96 @@ from webapp.utils.cache import (
 )
 
 
+TEAM_WAITING_MESSAGE = "🏁 Ваша команда завершила игру. Ожидаем вторую команду…"
+
+
+def _summarize_match_result(
+    teams: List[Dict[str, Any]],
+    match_progress_map: Dict[str, Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Build a lightweight summary of the final match result."""
+
+    scoreboard: List[Dict[str, Any]] = []
+
+    for team in teams:
+        if not isinstance(team, dict):
+            continue
+
+        raw_team_id = team.get("id")
+        team_id = _normalize_identifier(raw_team_id)
+        if not team_id:
+            continue
+
+        progress = match_progress_map.get(team_id) or {}
+
+        score_raw = progress.get("team_score")
+        try:
+            score_value = int(score_raw)
+        except (TypeError, ValueError):
+            score_value = 0
+
+        time_taken_raw = progress.get("time_taken")
+        try:
+            time_taken_value = float(time_taken_raw)
+        except (TypeError, ValueError):
+            time_taken_value = None
+
+        name = team.get("name") or (team_id if isinstance(team_id, str) else "Команда")
+
+        scoreboard.append(
+            {
+                "team_id": team_id,
+                "team_name": name,
+                "score": score_value,
+                "time_taken": time_taken_value,
+            }
+        )
+
+    scoreboard.sort(
+        key=lambda item: (
+            -(item.get("score") or 0),
+            item.get("time_taken") if item.get("time_taken") is not None else float("inf"),
+            item.get("team_name") or "",
+        )
+    )
+
+    summary: Dict[str, Any] = {"scoreboard": scoreboard}
+    if not scoreboard:
+        return summary
+
+    top_score = scoreboard[0].get("score") or 0
+    winners = [entry for entry in scoreboard if (entry.get("score") or 0) == top_score]
+
+    if len(winners) == 1:
+        winner = winners[0]
+        runner_score = scoreboard[1].get("score") if len(scoreboard) > 1 else 0
+        score_text = f"{winner.get('score', 0)}:{runner_score or 0}"
+        winner_name = winner.get("team_name") or winner.get("team_id") or "Команда"
+        message = (
+            "✅ Игра завершена. Результат: команда "
+            f"«{winner_name}» победила со счётом {score_text}."
+        )
+        summary.update(
+            {
+                "winner": winner,
+                "runner_score": runner_score or 0,
+                "score_text": score_text,
+                "message": message,
+            }
+        )
+        return summary
+
+    winner_names = ", ".join(
+        f"«{entry.get('team_name') or entry.get('team_id') or 'Команда'}»" for entry in winners
+    )
+    message = (
+        "✅ Игра завершена. Результат: ничья — "
+        f"{winner_names} набрали по {top_score} очков."
+    )
+    summary.update({"score_text": None, "message": message, "winner": None})
+    return summary
+
+
 def _collect_match_team_statuses(teams: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], bool]:
     statuses: List[Dict[str, Any]] = []
     # матчу нужно минимум 2 команды
@@ -197,10 +287,18 @@ async def _build_match_status_response(
 
     if all_teams_completed:
         response["status"] = "finished"
+        summary = _summarize_match_result(response_teams, match_progress_map)
+        if summary.get("message"):
+            response["message"] = summary["message"]
+        response["result_summary"] = summary
+        response.pop("redirect", None)
     elif all_ready and not your_team_completed:
         response["redirect"] = f"/game/{match_id}"
     elif all_ready:
         response["status"] = "started"
+    elif your_team_completed:
+        response["message"] = TEAM_WAITING_MESSAGE
+        response.pop("redirect", None)
 
     MATCH_STATUS_CACHE[match_id] = response
     return response
