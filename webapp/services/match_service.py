@@ -253,6 +253,8 @@ async def _build_match_status_response(
             cached_team_ids.add(team_id)
 
         normalized_team_id = _normalize_identifier(team_id)
+        if normalized_team_id:
+            cached_team_ids.add(normalized_team_id)
         team_completed = bool(normalized_team_id and completed_flags.get(normalized_team_id))
 
         team_entry: dict[str, Any] = {
@@ -276,9 +278,32 @@ async def _build_match_status_response(
 
     your_team_completed = bool(your_team_id and completed_flags.get(your_team_id))
 
-    relevant_team_ids = {status.get("id") for status in statuses if status.get("id")}
+    relevant_team_ids = {
+        _normalize_identifier(status.get("id"))
+        for status in statuses
+        if _normalize_identifier(status.get("id"))
+    }
+
+    cached_normalized_team_ids = {
+        _normalize_identifier(team_id)
+        for team_id in cached_team_ids
+        if _normalize_identifier(team_id)
+    }
+
+    progress_team_ids = {
+        _normalize_identifier(team_id)
+        for team_id in match_progress_map.keys()
+        if _normalize_identifier(team_id)
+    }
+
+    if not relevant_team_ids:
+        relevant_team_ids = cached_normalized_team_ids or progress_team_ids
+
+    if not relevant_team_ids and your_team_id:
+        relevant_team_ids = {your_team_id}
+
     all_teams_completed = bool(relevant_team_ids) and all(
-        bool(completed_flags.get(_normalize_identifier(team_id))) for team_id in relevant_team_ids
+        bool(completed_flags.get(team_id)) for team_id in relevant_team_ids
     )
 
     if your_team_completed:
